@@ -3,7 +3,7 @@
 Simple tools to set up and update a Nomad SD card from your computer.
 
 Works on **Windows** and **Linux**. macOS should work too, but it is **untested
-at the moment**, treat it as experimental for now.
+at the moment** — treat it as experimental for now.
 
 ---
 
@@ -33,13 +33,14 @@ builds the search index so Nomad can find articles.
   all work together.
 - Re-adding a file that's already there (same name) simply replaces that one.
 - Very large files are split automatically so they fit the card.
-- Tested with full size wikipedia maxi + images.
 
 ### 2. Optimize cover images
 Shrinks the cover pictures in **Movies**, **Shows** and **Books** so pages load
-fast on Nomad. You choose which of those folders to run on. 
+fast on Nomad. You choose which of those folders to run on.
 
-- This **overwrites** the original images, so it asks you to confirm.
+- This **overwrites** the original images (no backup), so it asks you to confirm.
+- It only ever touches those three folders, and skips pictures that are already
+  small enough.
 
 ### 3. Rebuild media index
 Refreshes the list Nomad uses to show your media, after you've added or removed
@@ -52,15 +53,15 @@ then rebuild the index last so it reflects everything.
 
 ## What you need
 
-- **Python 3** - for everything.
+- **Python 3** — for everything.
   On Windows, install it from [python.org](https://www.python.org/downloads/) and
   tick **"Add python.exe to PATH"** during setup.
-- **Pillow** - only needed for *Optimize cover images*.
+- **Pillow** — only needed for *Optimize cover images*.
   Install with `py -m pip install Pillow` (Windows) or `pip3 install Pillow` (Linux).
   If it says Pillow is missing even though you installed it, run the exact command
-  the tool prints, that just means you have more than one Python and it's telling
+  the tool prints — that just means you have more than one Python and it's telling
   you which one needs it.
-- **Node.js** - only needed for *Add ZIM archives*.
+- **Node.js** — only needed for *Add ZIM archives*.
   Install it from [nodejs.org](https://nodejs.org).
 
 ---
