@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-optimize_images — shrink cover art on a nomad card so it loads fast on-device.
+optimize_images: shrink cover art on a nomad card so it loads fast on-device.
 
 Cover images are resized to 200 px wide and saved at 75% JPEG quality, in place.
-Only three folders are ever touched — Movies, Shows and Books — and you choose
+Only three folders are ever touched (Movies, Shows and Books) and you choose
 which of them to run on, so you can skip anything you've already done.
 
-    /Movies  — all subfolders        (posters live per-movie)
-    /Shows   — top level only         (one poster per show)
-    /Books   — one level deep         (cover per book folder)
+    /Movies   all subfolders         (posters live per-movie)
+    /Shows    one level deep          (poster inside each show folder)
+    /Books    one level deep          (cover per book folder)
 
 ⚠  This rewrites the original files. There is no backup. Read the warning.
 
@@ -35,7 +35,7 @@ except ImportError:
     print(f"  running: {exe}")
     print("  install Pillow into THAT Python with:")
     print(nc.c("1", f'      "{exe}" -m pip install Pillow'))
-    print(nc.c("2", "  (if you 'pip install'ed already, it went to a different Python — the"))
+    print(nc.c("2", "  (if you 'pip install'ed already, it went to a different Python; the"))
     print(nc.c("2", "   line above targets the right one. On Windows you can also try: py -m pip install Pillow)"))
     sys.exit(1)
 
@@ -45,7 +45,11 @@ JPEG_QUALITY = 75
 
 # The ONLY folders this tool will ever write to, with how deep it recurses:
 #   -1 = every subfolder,  0 = that folder only,  1 = one level down.
-FOLDERS = [("Movies", -1), ("Shows", 0), ("Books", 1)]
+# Shows is 1, not 0: shows.html looks for the poster INSIDE the show folder
+# first (an image named poster/cover/folder/art) and only falls back to one
+# sitting at the top of /Shows. At 0 the common case was never optimized.
+# Depth 1 is /Shows/<Show>/*.jpg; season art a level further down is left alone.
+FOLDERS = [("Movies", -1), ("Shows", 1), ("Books", 1)]
 _DEPTH_DESC = {-1: "all subfolders", 0: "top level only", 1: "one level deep"}
 
 
@@ -63,6 +67,12 @@ def _iter_images(folder: Path, max_depth: int, depth: int = 0):
                 yield from _iter_images(item, max_depth, depth + 1)
 
 
+# Image.Resampling arrived in Pillow 9.1. Ubuntu 22.04 ships 9.0.1, where every
+# resize would die with "module 'PIL.Image' has no attribute 'Resampling'". The
+# bare Image.LANCZOS alias still exists in Pillow 10 and 11, so this covers both.
+_LANCZOS = getattr(Image, "Resampling", Image).LANCZOS
+
+
 def _resize(path: Path) -> str:
     """Resize one image in place. Returns 'ok' | 'skip' | 'error'."""
     try:
@@ -71,7 +81,7 @@ def _resize(path: Path) -> str:
             if w <= MAX_WIDTH:
                 return "skip"
             new_h = int((MAX_WIDTH / w) * h)
-            img.resize((MAX_WIDTH, new_h), Image.Resampling.LANCZOS).save(
+            img.resize((MAX_WIDTH, new_h), _LANCZOS).save(
                 path, "JPEG", quality=JPEG_QUALITY, optimize=True)
         return "ok"
     except Exception as exc:
@@ -80,7 +90,7 @@ def _resize(path: Path) -> str:
 
 
 def _pick_folders(root: Path, preselect: list[str] | None) -> list[tuple[str, int]]:
-    """Return the [(name, depth)] to process — from `preselect` or a menu."""
+    """Return the [(name, depth)] to process, from `preselect` or a menu."""
     present = [(name, depth) for name, depth in FOLDERS if (root / name).is_dir()]
     if not present:
         return []
@@ -106,11 +116,11 @@ def _pick_folders(root: Path, preselect: list[str] | None) -> list[tuple[str, in
         picks = {p.strip() for p in raw.replace(" ", ",").split(",") if p.strip()}
         if picks and all(p.isdigit() and 1 <= int(p) <= len(present) for p in picks):
             return [present[int(p) - 1] for p in sorted(picks, key=int)]
-        print("  type folder numbers like 1,3 — or 'a' for all.")
+        print("  type folder numbers like 1,3, or 'a' for all.")
 
 
 def _confirm(root: Path, chosen: list[tuple[str, int]]) -> bool:
-    print(nc.c("1;33", "\n⚠  DESTRUCTIVE — images are overwritten in place, no backup."))
+    print(nc.c("1;33", "\nDESTRUCTIVE: images are overwritten in place, no backup."))
     print(f"   card: {root}")
     for name, depth in chosen:
         print(f"   • /{name}  ({_DEPTH_DESC[depth]})  → {MAX_WIDTH}px, {JPEG_QUALITY}% quality")
@@ -132,7 +142,7 @@ def run(dest: str | None = None, dirs: list[str] | None = None,
 
     chosen = _pick_folders(root, dirs)
     if not chosen:
-        print("Nothing selected — nothing to do.")
+        print("Nothing selected, nothing to do.")
         return 1
 
     if not assume_yes and not _confirm(root, chosen):

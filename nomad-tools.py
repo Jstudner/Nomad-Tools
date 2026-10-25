@@ -1,18 +1,10 @@
 #!/usr/bin/env python3
 """
-nomad-tools — one friendly menu for every nomad card tool.
+nomad-tools: one friendly menu for every nomad card tool.
 
-Run this and it walks you through the three jobs you might want to do to a card:
-
-    1. Import ZIM archives   copy Wikipedia/Gutenberg/etc. onto the card and
-                             build the search index nomad uses to find articles.
-    2. Optimize images       shrink cover art in Movies/Shows/Books so pages
-                             load fast on-device (you pick which folders).
-    3. Rebuild media index   refresh the browse index after you add or remove
-                             media, so nomad shows the right files.
-
-Pick a card once; then do as many jobs as you like before quitting. Each tool
-can also be run on its own — see the README.
+Pick a card once, then do as many jobs as you like before quitting. The jobs
+are the MENU list below, and each tool can also be run on its own, see the
+README.
 
     ./nomad-tools.py
 """
@@ -21,11 +13,24 @@ from __future__ import annotations
 import sys
 
 import nomad_common as nc
+import add_media
 import import_zim
 import optimize_images
 import build_index
+import map_buckets
+import map_tiles
+import nomad_route
+import optimize_tiles
+import translate_packs
+import format_card
 
 MENU = [
+    ("Add media to the card",
+     "Films, shows, books, music, photos, games, recipes, models. Checks the format first.",
+     add_media.run),
+    ("Check what nomad will show",
+     "Walk a card you already filled in and find what the device ignores. Changes nothing.",
+     add_media.run_check),
     ("Import ZIM archives",
      "Copy .zim archives onto the card and build the article search index.",
      import_zim.run),
@@ -35,6 +40,24 @@ MENU = [
     ("Rebuild media index",
      "Refresh the browse index after adding or removing media. Non-destructive.",
      build_index.run),
+    ("Download offline maps",
+     "Pull map tiles for a region into /Maps, with a size estimate and space check first.",
+     map_tiles.run),
+    ("Build a routing map",
+     "Pick states or regions for offline turn by turn directions. Opened by URL, not the Maps list.",
+     nomad_route.run),
+    ("See map areas and sizes",
+     "What every state, region and set would cost on the card. Downloads nothing.",
+     map_buckets.run),
+    ("Optimize map tiles",
+     "Re-encode a region's tiles to WebP, about 40% smaller. Replaces the original tiles.",
+     optimize_tiles.run),
+    ("Add translation languages",
+     "Language packs for the Translate page. Each language installs both directions.",
+     translate_packs.run),
+    ("Format a card as exFAT",
+     "Erase a card and set it up as exFAT (Linux only). Destroys everything on it.",
+     format_card.run),
 ]
 
 
@@ -54,7 +77,7 @@ def main() -> int:
 
     card = _pick_card()
     if not card:
-        print("No card selected — bye.")
+        print("No card selected, bye.")
         return 0
 
     while True:
@@ -77,9 +100,14 @@ def main() -> int:
             try:
                 action(dest=card)
             except KeyboardInterrupt:
-                print(nc.c("1;31", "\n  interrupted — back to the menu."))
+                print(nc.c("1;31", "\n  interrupted, back to the menu."))
+            except EOFError:
+                raise
+            except Exception as e:       # one tool failing shouldn't close the menu
+                print(nc.c("1;31", f"\n  error: {e}"))
+                print(nc.c("2", "  back to the menu."))
             continue
-        print("  type 1, 2, 3, c, or 0.")
+        print(f"  type 1-{len(MENU)}, c, or 0.")
 
 
 if __name__ == "__main__":
@@ -88,3 +116,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nbye.")
         sys.exit(130)
+    except EOFError:                     # stdin closed or piped: not a crash
+        print("\nno input, stopping.")
+        sys.exit(1)

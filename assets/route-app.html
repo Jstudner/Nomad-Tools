@@ -1,0 +1,1138 @@
+<!DOCTYPE html>
+<!-- Nomad offline routing app. Self-contained under /Maps/<id>/: reads
+     ./manifest.json, ./routing/graph.bin (NRG1) and ./routing/places.json,
+     and serves tiles from ./tiles. Built by pc-tools/nomad_route.py.
+     Layout is map-first: a compact planner card and a collapsible directions
+     card float over the map on phones; on wide screens they become a left
+     sidebar so the map is never covered. -->
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<title>Nomad • Map</title>
+<link rel="icon" href="/favicon.ico" type="image/x-icon">
+<link rel="stylesheet" href="/master.css">
+<link rel="stylesheet" href="/assets/leaflet/leaflet.css">
+<script src="/theme-boot.js"></script>
+<script src="/theme-manager.js"></script>
+<script src="/assets/leaflet/leaflet.js"></script>
+<style>
+  html,body{height:100%;margin:0}
+  body{display:flex;flex-direction:column;overflow:hidden}
+  header{flex:0 0 auto}
+  #wrap{flex:1;position:relative;min-height:0}
+  #map{position:absolute;inset:0;background:#dfe3e8;z-index:1}
+
+  /* Leaflet controls sit below our cards but above the map */
+  .leaflet-top,.leaflet-bottom{z-index:800}
+  .locate-btn{background:#fff;border:2px solid rgba(0,0,0,.25);border-radius:6px;width:34px;height:34px;
+    cursor:pointer;display:flex;align-items:center;justify-content:center;color:#333}
+  /* on phones the cards own the top and bottom, so drop the map's own controls
+     (the planner's location button covers GPS, and pinch handles zoom) */
+  @media (max-width:819px){ .leaflet-control{display:none!important} }
+
+  /* sidebar wrapper: does nothing on phones (children float), becomes a column on desktop */
+  #sidebar{display:contents}
+
+  /* ---- planner card ---- */
+  #planner{position:absolute;z-index:1000;top:10px;left:10px;right:10px;max-width:440px;margin:0 auto;
+    background:var(--card);border:1px solid var(--line);border-radius:14px;
+    box-shadow:0 4px 20px rgba(0,0,0,.20);padding:10px 12px}
+  .frow{display:flex;align-items:center;gap:9px;margin:5px 0}
+  .frow .pin{width:12px;height:12px;border-radius:50%;flex:0 0 auto;border:2px solid var(--card);
+    box-shadow:0 0 0 1.5px rgba(0,0,0,.35)}
+  .frow.s .pin{background:#22a447}
+  .frow.e .pin{background:#e0473c}
+  .frow input{flex:1;min-width:0;box-sizing:border-box;background:var(--bg);color:var(--text);
+    border:1px solid var(--line);border-radius:9px;padding:9px 11px;font-size:.95rem}
+  .frow input:focus{outline:none;border-color:var(--primary)}
+  .frow .ib{background:none;border:none;color:var(--muted);cursor:pointer;font-size:1.15rem;
+    padding:0 4px;flex:0 0 auto;line-height:1}
+  .frow .ib:hover{color:var(--text)}
+  .modes{display:flex;margin:9px 0 2px;border:1px solid var(--line);border-radius:9px;overflow:hidden}
+  .modes button{flex:1;background:var(--card);color:var(--text);border:none;padding:8px;font-size:.9rem;
+    cursor:pointer;display:flex;gap:6px;align-items:center;justify-content:center}
+  .modes button+button{border-left:1px solid var(--line)}
+  .modes button.on{background:var(--primary);color:var(--color-white,#fff)}
+
+  /* category chips: one scrolling row, never wraps the card taller */
+  #cats{display:none;gap:6px;margin:9px 0 1px;overflow-x:auto;padding-bottom:2px}
+  #cats::-webkit-scrollbar{height:0}
+  .chip{flex:0 0 auto;background:var(--bg);color:var(--text);border:1px solid var(--line);
+    border-radius:999px;padding:6px 12px;font-size:.82rem;cursor:pointer;white-space:nowrap}
+  .chip.on{font-weight:650}
+
+  #results{position:absolute;left:0;right:0;top:100%;margin-top:6px;list-style:none;padding:4px;
+    background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.22);
+    max-height:min(52vh,380px);overflow-y:auto;display:none;z-index:1002}
+  #results li.none{padding:10px 12px;color:var(--muted);font-size:.9rem}
+  /* a search hit: tap the name to look at it, or commit it to a slot */
+  .res{display:flex;align-items:center;gap:10px;padding:8px 9px;border-radius:9px}
+  .res:hover{background:var(--bg)}
+  .res .info{flex:1;min-width:0;cursor:pointer}
+  .res .nm{font-size:.92rem;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .res .meta{font-size:.76rem;color:var(--muted);margin-top:1px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .res .acts{display:flex;gap:5px;flex:0 0 auto}
+  .pill{border:none;border-radius:7px;padding:6px 10px;font-size:.78rem;font-weight:600;
+    cursor:pointer;color:#fff;white-space:nowrap}
+  .pill.a{background:#22a447}
+  .pill.b{background:#e0473c}
+  .pill:active{filter:brightness(.9)}
+
+  /* saved routes */
+  #savedWrap{margin-top:9px;border-top:1px solid var(--line);padding-top:8px;display:none}
+  #savedWrap.show{display:block}
+  #savedHead{display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;
+    font-size:.85rem;color:var(--muted)}
+  #savedHead .chev{margin-left:auto;transition:transform .2s}
+  #savedWrap.open #savedHead .chev{transform:rotate(180deg)}
+  #savedList{list-style:none;margin:6px 0 0;padding:0;max-height:0;overflow:hidden;transition:max-height .2s}
+  #savedWrap.open #savedList{max-height:190px;overflow-y:auto}
+  .saved-row{display:flex;align-items:center;gap:9px;padding:7px 4px;border-top:1px solid var(--line)}
+  .saved-row:first-child{border-top:none}
+  .saved-row .s-info{flex:1;min-width:0;cursor:pointer}
+  .saved-row .s-nm{font-size:.88rem;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .saved-row .s-meta{font-size:.74rem;color:var(--muted)}
+  .saved-row .s-del{background:none;border:none;color:var(--muted);cursor:pointer;font-size:1.05rem;padding:2px 5px}
+  .saved-row .s-del:hover{color:#e0473c}
+
+  #saveRouteBtn{width:100%;margin-top:10px;background:var(--bg);color:var(--text);
+    border:1px solid var(--line);border-radius:9px;padding:9px;cursor:pointer;font-size:.88rem}
+  #saveRouteBtn:hover{border-color:var(--primary)}
+  #saveRouteBtn.done{color:#22a447;border-color:#22a447}
+
+  /* map tap popup actions */
+  .tapbtns{display:flex;gap:6px;margin-top:7px}
+  .tapbtns button{flex:1;border:none;border-radius:7px;padding:7px 10px;color:#fff;
+    font-size:.8rem;font-weight:600;cursor:pointer}
+
+  /* ---- directions card ---- */
+  #directions{position:absolute;z-index:1000;left:10px;right:10px;bottom:10px;max-width:440px;margin:0 auto;
+    background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:0 4px 20px rgba(0,0,0,.20);
+    display:none;overflow:hidden}
+  #directions.show{display:block}
+  #dirHead{display:flex;align-items:center;gap:11px;padding:11px 14px;cursor:pointer;user-select:none}
+  #dirHead .txt{flex:1;min-width:0}
+  #dirHead .big{font-weight:650;font-size:1.02rem;color:var(--text)}
+  #dirHead .sub{color:var(--muted);font-size:.8rem;margin-top:1px}
+  #dirHead .chev{color:var(--muted);transition:transform .2s;flex:0 0 auto}
+  #directions.open #dirHead .chev{transform:rotate(180deg)}
+  #steps{list-style:none;margin:0;padding:0;max-height:0;overflow:hidden;transition:max-height .22s ease}
+  #directions.open #steps{max-height:min(42vh,380px);overflow-y:auto;border-top:1px solid var(--line)}
+  #steps li{display:flex;gap:11px;align-items:baseline;padding:9px 14px;font-size:.92rem}
+  #steps li+li{border-top:1px solid var(--line)}
+  #steps .man{flex:0 0 22px;color:var(--primary);font-size:1.05rem;text-align:center}
+  #steps .txt{flex:1;color:var(--text)}
+  #steps .d{color:var(--muted);font-size:.8rem;white-space:nowrap}
+
+  /* ---- toast ---- */
+  #toast{position:absolute;z-index:1500;left:50%;bottom:20px;transform:translate(-50%,10px);
+    background:rgba(20,22,26,.92);color:#fff;border-radius:20px;padding:8px 16px;font-size:.85rem;
+    box-shadow:0 3px 14px rgba(0,0,0,.3);opacity:0;pointer-events:none;transition:opacity .18s,transform .18s;max-width:82vw}
+  #toast.show{opacity:1;transform:translate(-50%,0)}
+
+  /* ---- GPS help modal (flags method, from the Maps page) ---- */
+  .gps-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:5000;
+    align-items:center;justify-content:center;padding:16px}
+  .gps-modal.open{display:flex}
+  .gps-modal-content{background:var(--card);color:var(--text);border:1px solid var(--line);
+    border-radius:12px;max-width:480px;width:100%;max-height:85vh;overflow-y:auto;padding:18px 20px}
+  .gps-modal-content h2{margin:0 0 .5rem;font-size:1.1rem}
+  .gps-modal-content ol{padding-left:1.2rem;margin:.5rem 0}
+  .gps-modal-content li{margin:.45rem 0;font-size:.92rem;line-height:1.45}
+  .gps-modal-content code{background:var(--bg);border:1px solid var(--line);border-radius:6px;
+    padding:2px 6px;font-size:.85em;word-break:break-all}
+  .gps-modal-content .note{color:var(--muted);font-size:.85rem;margin-top:.6rem}
+  .gps-modal-content button{margin-top:12px;width:100%;background:var(--primary);
+    color:var(--color-white,#fff);border:none;border-radius:8px;padding:10px;cursor:pointer}
+
+  /* ---- routing overlay: blocks the map while a route is being found ---- */
+  #routeOverlay{position:absolute;inset:0;z-index:2000;background:rgba(0,0,0,.45);
+    display:none;align-items:center;justify-content:center;padding:20px}
+  #routeOverlay.show{display:flex}
+  #routeCard{background:var(--card);color:var(--text);border:1px solid var(--line);
+    border-radius:14px;padding:20px 22px;max-width:330px;width:100%;text-align:center;
+    box-shadow:0 8px 30px rgba(0,0,0,.35)}
+  #routeCard .title{font-weight:650;margin-bottom:5px}
+  #routeCard .sub{color:var(--muted);font-size:.85rem;min-height:1.25em}
+  .spinner{width:30px;height:30px;margin:2px auto 12px;border:3px solid var(--line);
+    border-top-color:var(--primary);border-radius:50%;animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  #routeCancel{margin-top:15px;width:100%;background:var(--bg);color:var(--text);
+    border:1px solid var(--line);border-radius:9px;padding:9px;cursor:pointer;font-size:.92rem}
+  #routeCancel:hover{border-color:var(--primary)}
+
+  /* ---- loader ---- */
+  #loader{position:absolute;inset:0;z-index:1400;background:var(--card);display:flex;
+    flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;padding:24px}
+  #loader .bar{width:min(320px,80vw);height:8px;border-radius:5px;background:var(--bg);overflow:hidden}
+  #loader .bar>i{display:block;height:100%;width:0;background:var(--primary);transition:width .2s}
+  #fatal{color:#e0473c;max-width:90vw}
+
+  /* ---- desktop: sidebar, map fills the rest, nothing floats over it ---- */
+  @media (min-width:820px){
+    #map{left:360px}
+    #sidebar{display:flex;flex-direction:column;position:absolute;top:0;left:0;bottom:0;width:360px;z-index:1000;
+      background:var(--card);border-right:1px solid var(--line);box-shadow:2px 0 16px rgba(0,0,0,.10)}
+    #planner{position:relative;top:auto;left:auto;right:auto;max-width:none;margin:0;
+      border:none;border-radius:0;box-shadow:none;border-bottom:1px solid var(--line);flex:0 0 auto}
+    #directions{position:relative;left:auto;right:auto;bottom:auto;max-width:none;margin:0;
+      border:none;border-radius:0;box-shadow:none;flex:1 1 auto;min-height:0}
+    #directions.show{display:flex;flex-direction:column}
+    #steps,#directions.open #steps{max-height:none;flex:1 1 auto;overflow-y:auto}
+    #dirHead{cursor:default}
+    #dirHead .chev{display:none}
+    #toast{left:calc(360px + (100% - 360px)/2)}
+  }
+</style>
+</head>
+<body>
+  <header>
+    <h1 id="regionName">Map</h1>
+    <a class="back-btn" href="/maps">← Maps</a>
+  </header>
+
+  <div id="wrap">
+    <div id="map"></div>
+
+    <div id="sidebar">
+      <div id="planner">
+        <div class="frow s">
+          <span class="pin"></span>
+          <input id="startBox" type="text" placeholder="Search, or tap the map" autocomplete="off" spellcheck="false"/>
+          <button class="ib" title="Start from my location" onclick="useMyLocationAsStart()">◎</button>
+          <button class="ib" title="Clear" onclick="clearPoint('start')">×</button>
+        </div>
+        <div class="frow e">
+          <span class="pin"></span>
+          <input id="endBox" type="text" placeholder="Destination" autocomplete="off" spellcheck="false"/>
+          <button class="ib" title="Clear" onclick="clearPoint('end')">×</button>
+        </div>
+        <div class="modes">
+          <button id="mDrive" class="on" onclick="setProfile('drive')">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 11l1.5-4.5A2 2 0 018.4 5h7.2a2 2 0 011.9 1.5L19 11"/><path d="M4 11h16v5H4z"/><circle cx="7.5" cy="16.5" r="1.3"/><circle cx="16.5" cy="16.5" r="1.3"/></svg>
+            Drive</button>
+          <button id="mWalk" onclick="setProfile('walk')">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="13" cy="4" r="1.6"/><path d="M11 21l1.5-6-2-1.5L9 9l3-1 3 2 2 1M10.5 13.5L8 21"/></svg>
+            Walk</button>
+        </div>
+        <div id="cats"></div>
+        <div id="savedWrap">
+          <div id="savedHead" onclick="toggleSaved()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg>
+            <span id="savedCount">Saved routes</span>
+            <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 15l6-6 6 6"/></svg>
+          </div>
+          <ul id="savedList"></ul>
+        </div>
+        <ul id="results"></ul>
+      </div>
+
+      <div id="directions">
+        <div id="dirHead" onclick="toggleDir()">
+          <div class="txt"><div class="big" id="sumBig"></div><div class="sub" id="sumSub"></div></div>
+          <svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 15l6-6 6 6"/></svg>
+        </div>
+        <ul id="steps"></ul>
+        <div style="padding:0 14px 12px"><button id="saveRouteBtn" onclick="saveCurrentRoute()">Save this route</button></div>
+      </div>
+    </div>
+
+    <div id="toast"></div>
+
+    <div id="routeOverlay">
+      <div id="routeCard">
+        <div class="spinner"></div>
+        <div class="title" id="routeTitle">Finding route…</div>
+        <div class="sub" id="routeSub"></div>
+        <button id="routeCancel" onclick="cancelRoute()">Cancel</button>
+      </div>
+    </div>
+
+    <div id="loader">
+      <div style="font-size:1.05rem" id="loadMsg">Loading map…</div>
+      <div class="bar"><i id="loadBar"></i></div>
+      <div id="fatal"></div>
+    </div>
+  </div>
+
+  <div class="gps-modal" id="gpsModal">
+    <div class="gps-modal-content">
+      <h2>Use my location</h2>
+      <p style="margin:.3rem 0;font-size:.92rem">Browsers only share your location over a secure (HTTPS) connection, and this device serves over standard HTTP. You can always tap the map to set points instead.</p>
+      <p style="margin:.6rem 0 .2rem;font-size:.92rem"><b>To turn GPS on in Chrome</b> (Android or desktop), allow this address once:</p>
+      <ol>
+        <li>Open a new tab and go to <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code></li>
+        <li>Enter <code id="gpsOrigin">http://nomad.local</code> in the box</li>
+        <li>Set it to <b>Enabled</b> and tap <b>Relaunch</b></li>
+        <li>Come back and press the ◎ button again</li>
+      </ol>
+      <p class="note">Safari on iPhone/iPad has no equivalent setting; tap the map to set your start instead. This only affects your own browser.</p>
+      <button onclick="document.getElementById('gpsModal').classList.remove('open')">Close</button>
+    </div>
+  </div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const E6 = 1e6;
+
+/* Big routing files (graph.bin, places.json, l0.idx, l0.bin) are read through the
+   firmware's range-honouring /media endpoint. A plain GET of a large file under
+   /Maps falls through to the whole-file handler that IGNORES Range and streams the
+   entire file, which wedges the async web server (and makes every tiled cell fetch
+   re-download the whole l0.bin). Same rule nomad-zim.js and nomad-xlate.js follow.
+   Small files (manifest, tiles) stay on the plain path. */
+/* pathname arrives percent encoded, so decode it first or the
+   encodeURIComponent below double encodes region names with spaces */
+const REGION_BASE = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');   // '/Maps/<id>/'
+const cardURL = (rel) => '/media?file=' + encodeURIComponent(REGION_BASE + rel.replace(/^\.?\//, ''));
+function fatal(msg){ $('loadMsg').textContent='Could not load this map'; $('fatal').textContent=msg; $('loadBar').parentElement.style.display='none'; }
+function fmtDist(m){ const mi=m/1609.344; return mi<0.1?Math.round(m*3.28084)+' ft':mi.toFixed(mi<10?1:0)+' mi'; }
+function fmtTime(s){ const m=Math.round(s/60); if(m<1)return '<1 min'; if(m<60)return m+' min'; return Math.floor(m/60)+' h '+(m%60)+' min'; }
+function escapeHtml(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+let toastTimer=null;
+function toast(msg,ms){ const t=$('toast'); if(!msg){t.classList.remove('show');return;} t.textContent=msg; t.classList.add('show'); clearTimeout(toastTimer); if(ms) toastTimer=setTimeout(()=>t.classList.remove('show'),ms); }
+
+/* ================= NRG1 routing graph (validated core, unchanged) ================= */
+const CLASS_SPEED=[100,90,60,50,45,40,30,12,20,40,5,5,4,15,5,20];
+const F_FOOT=1<<4, F_AGAINST=1<<5, F_REV=1<<6;
+const NO_NAME=0xFFFFFFFF;
+let G=null, manifest=null;
+
+function parseGraph(buf){
+  const dv=new DataView(buf), u8=new Uint8Array(buf);
+  if(!(u8[0]===0x4E&&u8[1]===0x52&&u8[2]===0x47&&u8[3]===0x31)) throw new Error('graph.bin is not NRG1');
+  let o=4;
+  const ver=dv.getUint32(o,true); o+=4;
+  const bbox=[dv.getFloat32(o,true),dv.getFloat32(o+4,true),dv.getFloat32(o+8,true),dv.getFloat32(o+12,true)]; o+=16;
+  const nNodes=dv.getUint32(o,true), nEdges=dv.getUint32(o+4,true), nGeom=dv.getUint32(o+8,true), nNames=dv.getUint32(o+12,true); o+=16;
+  const nodes=new Int32Array(buf, o, nNodes*2); o+=nNodes*8;
+  const eFrom=new Uint32Array(nEdges), eTo=new Uint32Array(nEdges), eDist=new Uint32Array(nEdges),
+        eName=new Uint32Array(nEdges), eGOff=new Uint32Array(nEdges), eFlags=new Uint16Array(nEdges), eGLen=new Uint16Array(nEdges);
+  for(let i=0;i<nEdges;i++){
+    eFrom[i]=dv.getUint32(o,true); eTo[i]=dv.getUint32(o+4,true); eDist[i]=dv.getUint32(o+8,true);
+    eName[i]=dv.getUint32(o+12,true); eGOff[i]=dv.getUint32(o+16,true); eFlags[i]=dv.getUint16(o+20,true); eGLen[i]=dv.getUint16(o+22,true);
+    o+=24;
+  }
+  const geom=new Int32Array(buf, o, nGeom*2); o+=nGeom*8;
+  const names=new Array(nNames);
+  const dec=new TextDecoder();
+  for(let i=0;i<nNames;i++){ const ln=dv.getUint16(o,true); o+=2; names[i]=dec.decode(u8.subarray(o,o+ln)); o+=ln; }
+  const adjStart=new Uint32Array(nNodes+1);
+  for(let i=0;i<nEdges;i++) adjStart[eFrom[i]+1]++;
+  for(let i=0;i<nNodes;i++) adjStart[i+1]+=adjStart[i];
+  const adjEdge=new Uint32Array(nEdges); const cur=adjStart.slice();
+  for(let i=0;i<nEdges;i++){ const f=eFrom[i]; adjEdge[cur[f]++]=i; }
+  const cap=new Uint8Array(nNodes);
+  for(let n=0;n<nNodes;n++){
+    for(let k=adjStart[n];k<adjStart[n+1];k++){
+      const fl=eFlags[adjEdge[k]]; cap[n]|=2;
+      if(!(fl&F_FOOT)&&!(fl&F_AGAINST)) cap[n]|=1;
+    }
+  }
+  const gw=Math.max(1,Math.round(Math.sqrt(nNodes/2)));
+  const minLat=bbox[1],minLon=bbox[0],spanLat=(bbox[3]-bbox[1])||1e-6,spanLon=(bbox[2]-bbox[0])||1e-6;
+  const cellOf=(la,lo)=>{ let gy=Math.floor((la-minLat)/spanLat*gw); let gx=Math.floor((lo-minLon)/spanLon*gw);
+    gx=Math.min(gw-1,Math.max(0,gx)); gy=Math.min(gw-1,Math.max(0,gy)); return gy*gw+gx; };
+  const cellCnt=new Uint32Array(gw*gw+1);
+  for(let n=0;n<nNodes;n++) cellCnt[cellOf(nodes[n*2]/E6,nodes[n*2+1]/E6)+1]++;
+  for(let i=0;i<gw*gw;i++) cellCnt[i+1]+=cellCnt[i];
+  const cellNode=new Uint32Array(nNodes); const cc=cellCnt.slice();
+  for(let n=0;n<nNodes;n++){ const c=cellOf(nodes[n*2]/E6,nodes[n*2+1]/E6); cellNode[cc[c]++]=n; }
+  return {ver,bbox,nNodes,nEdges,nodes,eFrom,eTo,eDist,eName,eGOff,eFlags,eGLen,geom,names,
+          adjStart,adjEdge,cap,gw,minLat,minLon,spanLat,spanLon,cellOf,cellCnt,cellNode};
+}
+function haversine(la1,lo1,la2,lo2){
+  const R=6371000,r=Math.PI/180;
+  const p1=la1*r,p2=la2*r,dp=(la2-la1)*r,dl=(lo2-lo1)*r;
+  const a=Math.sin(dp/2)**2+Math.cos(p1)*Math.cos(p2)*Math.sin(dl/2)**2;
+  return 2*R*Math.asin(Math.sqrt(a));
+}
+function nearestNode(la,lo,driveOnly){
+  const g=G, want=driveOnly?1:2;
+  const cx=Math.min(g.gw-1,Math.max(0,Math.floor((lo-g.minLon)/g.spanLon*g.gw)));
+  const cy=Math.min(g.gw-1,Math.max(0,Math.floor((la-g.minLat)/g.spanLat*g.gw)));
+  let best=-1,bd=Infinity;
+  for(let ring=0; ring<=g.gw; ring++){
+    for(let gy=cy-ring;gy<=cy+ring;gy++){
+      if(gy<0||gy>=g.gw) continue;
+      for(let gx=cx-ring;gx<=cx+ring;gx++){
+        if(gx<0||gx>=g.gw) continue;
+        if(ring>0 && gx>cx-ring && gx<cx+ring && gy>cy-ring && gy<cy+ring) continue;
+        const c=gy*g.gw+gx;
+        for(let k=g.cellCnt[c];k<g.cellCnt[c+1];k++){
+          const n=g.cellNode[k];
+          if(!(g.cap[n]&want)) continue;
+          const d=haversine(la,lo,g.nodes[n*2]/E6,g.nodes[n*2+1]/E6);
+          if(d<bd){bd=d;best=n;}
+        }
+      }
+    }
+    if(best>=0 && ring>0) break;
+  }
+  return best;
+}
+function astar(s,t,driveOnly){
+  const g=G, N=g.nNodes;
+  const gscore=new Float64Array(N).fill(Infinity);
+  const came=new Int32Array(N).fill(-1);
+  const viaEdge=new Int32Array(N).fill(-1);
+  const closed=new Uint8Array(N);
+  const dLat=g.nodes[t*2]/E6, dLon=g.nodes[t*2+1]/E6;
+  const MAXV=100*1000/3600;
+  const H=(n)=> haversine(g.nodes[n*2]/E6,g.nodes[n*2+1]/E6,dLat,dLon)/(driveOnly?MAXV:1.4);
+  const heap=[]; const push=(f,n)=>{heap.push([f,n]); let i=heap.length-1;
+    while(i>0){const p=(i-1)>>1; if(heap[p][0]<=heap[i][0])break; [heap[p],heap[i]]=[heap[i],heap[p]]; i=p;}};
+  const pop=()=>{const top=heap[0],last=heap.pop(); if(heap.length){heap[0]=last; let i=0;
+    for(;;){let l=2*i+1,r=l+1,m=i; if(l<heap.length&&heap[l][0]<heap[m][0])m=l; if(r<heap.length&&heap[r][0]<heap[m][0])m=r; if(m===i)break; [heap[m],heap[i]]=[heap[i],heap[m]]; i=m;}} return top;};
+  gscore[s]=0; push(H(s),s);
+  let explored=0;
+  while(heap.length){
+    const [,u]=pop();
+    if(closed[u]) continue; closed[u]=1; explored++;
+    if(u===t) break;
+    for(let k=g.adjStart[u];k<g.adjStart[u+1];k++){
+      const e=g.adjEdge[k], fl=g.eFlags[e];
+      if(driveOnly && ((fl&F_FOOT)||(fl&F_AGAINST))) continue;
+      const v=g.eTo[e];
+      if(closed[v]) continue;
+      const cls=fl&0x0F, spd=driveOnly?CLASS_SPEED[cls]*1000/3600:1.4;
+      const cost=g.eDist[e]/spd;
+      const ng=gscore[u]+cost;
+      if(ng<gscore[v]){ gscore[v]=ng; came[v]=u; viaEdge[v]=e; push(ng+H(v),v); }
+    }
+  }
+  if(gscore[t]===Infinity) return null;
+  const edges=[]; let u=t;
+  while(viaEdge[u]!==-1){ edges.push(viaEdge[u]); u=came[u]; }
+  edges.reverse();
+  return {edges,time:gscore[t],explored};
+}
+function edgePts(e){
+  const g=G, out=[];
+  out.push([g.nodes[g.eFrom[e]*2]/E6, g.nodes[g.eFrom[e]*2+1]/E6]);
+  const off=g.eGOff[e], len=g.eGLen[e], rev=g.eFlags[e]&F_REV;
+  for(let i=0;i<len;i++){ const j=rev?(len-1-i):i; out.push([g.geom[(off+j)*2]/E6, g.geom[(off+j)*2+1]/E6]); }
+  out.push([g.nodes[g.eTo[e]*2]/E6, g.nodes[g.eTo[e]*2+1]/E6]);
+  return out;
+}
+function bearing(a,b){
+  const r=Math.PI/180, la1=a[0]*r,la2=b[0]*r,dl=(b[1]-a[1])*r;
+  const x=Math.sin(dl)*Math.cos(la2), y=Math.cos(la1)*Math.sin(la2)-Math.sin(la1)*Math.cos(la2)*Math.cos(dl);
+  return (Math.atan2(x,y)/r+360)%360;
+}
+const COMPASS=['north','northeast','east','southeast','south','southwest','west','northwest'];
+function maneuver(delta){
+  let d=((delta+180)%360+360)%360-180;
+  if(Math.abs(d)<25) return ['↑','Continue'];
+  if(d>=25&&d<=60) return ['↗','Bear right onto'];
+  if(d>60&&d<=150) return ['→','Turn right onto'];
+  if(d>150) return ['↻','Make a U-turn onto'];
+  if(d<=-25&&d>=-60) return ['↖','Bear left onto'];
+  if(d<-60&&d>=-150) return ['←','Turn left onto'];
+  return ['↺','Make a U-turn onto'];
+}
+function edgesToLegs(edges){
+  return edges.map(e=>({
+    name: G.eName[e]===NO_NAME ? 'unnamed road' : G.names[G.eName[e]],
+    dist: G.eDist[e], pts: edgePts(e)
+  }));
+}
+/* legs -> turn-by-turn steps + one polyline. A leg is {name,dist,pts:[[lat,lon]...]};
+   both routers produce legs so the step/maneuver logic is shared. */
+function legsToSteps(legs){
+  const steps=[]; let poly=[];
+  for(let i=0;i<legs.length;i++){
+    const lg=legs[i], pts=lg.pts;
+    poly = poly.length ? poly.concat(pts.slice(1)) : pts.slice();
+    if(steps.length && steps[steps.length-1].name===lg.name){ steps[steps.length-1].dist+=lg.dist; continue; }
+    let man;
+    if(i===0){ man=['●','Head '+COMPASS[Math.round(bearing(pts[0],pts[1])/45)%8]+' on']; }
+    else { const prev=legs[i-1].pts; man=maneuver(bearing(pts[0],pts[1])-bearing(prev[prev.length-2],prev[prev.length-1])); }
+    steps.push({name:lg.name,dist:lg.dist,icon:man[0],verb:man[1]});
+  }
+  return {steps,poly};
+}
+
+/* ============ routers: flat = whole graph in RAM; tiled = cells on demand ============ */
+let ROUTER=null;
+function flatRouter(){
+  return {
+    tiled:false,
+    async snap(lat,lon,drive){ const n=nearestNode(lat,lon,drive); if(n<0) return null;
+      return {node:n, ll:[G.nodes[n*2]/E6, G.nodes[n*2+1]/E6]}; },
+    async route(a,b,drive){ const r=astar(a.node,b.node,drive); if(!r) return null;
+      return {legs:edgesToLegs(r.edges), time:r.time}; },
+  };
+}
+
+/* NRGT index (l0.idx) + NCL2 cells (l0.bin) fetched by HTTP byte-range */
+let TIDX=null; const cellCache=new Map(); const BINURL=cardURL('routing/l0.bin');
+/* Heuristic weight for the tiled search. 1.0 is a true shortest path but the
+   estimate is so conservative that A* spreads out and drags in far more cells
+   than the trip needs. Weighting it focuses the search down the corridor; the
+   route can come out a hair longer, which is a good trade when every extra cell
+   is an HTTP fetch over wifi. */
+let HWEIGHT=1.6;
+/* progress + cancellation for a search in flight */
+let routeAbort=false, routeCtl=null, cellsLoaded=0, bytesLoaded=0, overlayTimer=null;
+async function loadIndex(){
+  const buf=await (await fetchRetry(cardURL('routing/l0.idx'),6,'Loading map index')).arrayBuffer();
+  const dv=new DataView(buf), u8=new Uint8Array(buf);
+  if(!(u8[0]===0x4E&&u8[1]===0x52&&u8[2]===0x47&&u8[3]===0x54)) throw new Error('l0.idx is not NRGT');
+  let o=4; dv.getUint32(o,true); o+=4;                       // version
+  const bbox=[dv.getFloat32(o,true),dv.getFloat32(o+4,true),dv.getFloat32(o+8,true),dv.getFloat32(o+12,true)]; o+=16;
+  const cc=dv.getUint32(o,true); o+=8;                        // cellCount (+ skip nodeTotal)
+  const cells=[], byId=new Map();
+  for(let i=0;i<cc;i++){
+    const cid=dv.getUint32(o,true);
+    const mnla=dv.getInt32(o+4,true),mnlo=dv.getInt32(o+8,true),mxla=dv.getInt32(o+12,true),mxlo=dv.getInt32(o+16,true);
+    const off=Number(dv.getBigUint64(o+20,true)), len=dv.getUint32(o+28,true), vc=dv.getUint32(o+32,true);
+    o+=36;
+    const rec={id:cid,bbox:[mnla/E6,mnlo/E6,mxla/E6,mxlo/E6],off,len,vc};
+    cells.push(rec); byId.set(cid,rec);
+  }
+  TIDX={bbox,cells,byId};
+}
+function parseCell(buf){
+  const dv=new DataView(buf), u8=new Uint8Array(buf);
+  if(!(u8[0]===0x4E&&u8[1]===0x43&&u8[2]===0x4C&&u8[3]===0x32)) throw new Error('bad cell magic');
+  let o=4; const id=dv.getUint32(o,true); o+=4;
+  const vc=dv.getUint32(o,true),ec=dv.getUint32(o+4,true),hc=dv.getUint32(o+8,true),nc=dv.getUint32(o+12,true),gi=dv.getUint32(o+16,true); o+=20;
+  const verts=new Map();
+  for(let i=0;i<vc;i++){ const gid=dv.getUint32(o,true),la=dv.getInt32(o+4,true),lo=dv.getInt32(o+8,true); o+=12; verts.set(gid,[la/E6,lo/E6]); }
+  const adj=new Map();
+  for(let i=0;i<ec;i++){ const frm=dv.getUint32(o,true),to=dv.getUint32(o+4,true),dist=dv.getUint32(o+8,true),nmi=dv.getUint32(o+12,true),goff=dv.getUint32(o+16,true),flags=dv.getUint16(o+20,true),glen=dv.getUint16(o+22,true); o+=24;
+    let a=adj.get(frm); if(!a){a=[];adj.set(frm,a);} a.push([to,dist,nmi,goff,flags,glen]); }
+  const halo=new Map();
+  for(let i=0;i<hc;i++){ const gid=dv.getUint32(o,true),hcid=dv.getUint32(o+4,true),la=dv.getInt32(o+8,true),lo=dv.getInt32(o+12,true); o+=16; halo.set(gid,[hcid,la/E6,lo/E6]); }
+  const names=new Array(nc), dec=new TextDecoder();
+  for(let i=0;i<nc;i++){ const ln=dv.getUint16(o,true); o+=2; names[i]=dec.decode(u8.subarray(o,o+ln)); o+=ln; }
+  const geom=new Int32Array(gi);
+  for(let i=0;i<gi;i++){ geom[i]=dv.getInt32(o,true); o+=4; }
+  return {id,verts,adj,halo,names,geom};
+}
+/* Cells come over the same busy SD as the tiles, so a 503 here is routine.
+   Without retry a single busy moment made snapping throw and the start/end
+   field would never fill in. */
+async function loadCell(id){
+  if(cellCache.has(id)) return cellCache.get(id);
+  const rec=TIDX.byId.get(id); if(!rec) return null;
+  const headers={Range:`bytes=${rec.off}-${rec.off+rec.len-1}`};
+  let wait=300, lastErr='';
+  for(let i=0;i<5;i++){
+    if(routeAbort) return null;
+    try{
+      const resp=await fetch(BINURL,{headers,cache:'no-store',
+        signal: routeCtl ? routeCtl.signal : undefined});
+      if(resp.status===206 || resp.status===200){
+        let buf=await resp.arrayBuffer();
+        if(resp.status===200 && buf.byteLength>rec.len) buf=buf.slice(rec.off, rec.off+rec.len);
+        const cell=parseCell(buf); cellCache.set(id,cell);
+        cellsLoaded++; bytesLoaded+=rec.len; paintRouteProgress();
+        return cell;
+      }
+      lastErr='HTTP '+resp.status;
+    }catch(e){
+      if(e.name==='AbortError') throw e;          // a real cancel, not a hiccup
+      lastErr=e.message||String(e);
+    }
+    await new Promise(r=>setTimeout(r,wait));
+    wait=Math.min(wait*1.8,3000);
+  }
+  throw new Error('map area '+id+' failed: '+lastErr);
+}
+function cellsNear(lat,lon,k){
+  const sc=TIDX.cells.map(r=>{ const [a,b,c,d]=r.bbox;
+    const dla=lat<a?a-lat:lat>c?lat-c:0, dlo=lon<b?b-lon:lon>d?lon-d:0; return [dla*dla+dlo*dlo, r.id]; });
+  sc.sort((x,y)=>x[0]-y[0]);
+  return sc.slice(0,k).map(x=>x[1]);
+}
+async function nearestTiled(lat,lon,drive){
+  let best=null, bd=Infinity;
+  for(const id of cellsNear(lat,lon,4)){
+    const c=await loadCell(id); if(!c) continue;
+    for(const [gid,ll] of c.verts){
+      const es=c.adj.get(gid); if(!es) continue;
+      let ok=false; for(const e of es){ if(!drive||(!(e[4]&F_FOOT)&&!(e[4]&F_AGAINST))){ok=true;break;} }
+      if(!ok) continue;
+      const d=haversine(lat,lon,ll[0],ll[1]);
+      if(d<bd){ bd=d; best={node:gid,cell:id,ll}; }
+    }
+  }
+  return best;
+}
+async function routeTiled(a,b,drive){
+  const tll=b.ll;
+  const nodeCell=new Map([[a.node,a.cell],[b.node,b.cell]]);
+  const nodeCoord=new Map([[a.node,a.ll],[b.node,b.ll]]);
+  const g=new Map([[a.node,0]]); const came=new Map(); const closed=new Set();
+  const H=(ll)=>HWEIGHT*haversine(ll[0],ll[1],tll[0],tll[1])/(drive?27.78:1.4);
+  const heap=[]; const push=(f,n)=>{heap.push([f,n]); let i=heap.length-1;
+    while(i>0){const p=(i-1)>>1; if(heap[p][0]<=heap[i][0])break; [heap[p],heap[i]]=[heap[i],heap[p]]; i=p;}};
+  const pop=()=>{const top=heap[0],last=heap.pop(); if(heap.length){heap[0]=last; let i=0;
+    for(;;){let l=2*i+1,r=l+1,m=i; if(l<heap.length&&heap[l][0]<heap[m][0])m=l; if(r<heap.length&&heap[r][0]<heap[m][0])m=r; if(m===i)break; [heap[m],heap[i]]=[heap[i],heap[m]]; i=m;}} return top;};
+  push(H(a.ll), a.node);
+  let guard=0;
+  while(heap.length){
+    if(++guard>4000000) break;                       // safety cap so a bad graph can't hang the phone
+    if((guard & 1023)===0 && routeAbort) return {cancelled:true};
+    const [,u]=pop();
+    if(closed.has(u)) continue; closed.add(u);
+    if(u===b.node) break;
+    if(routeAbort) return {cancelled:true};
+    const cell=await loadCell(nodeCell.get(u)); if(!cell) continue;
+    const es=cell.adj.get(u); if(!es) continue;
+    for(const [to,dist,nmi,goff,flags,glen] of es){
+      if(drive && ((flags&F_FOOT)||(flags&F_AGAINST))) continue;
+      let tcoord,tcell;
+      if(cell.verts.has(to)){ tcoord=cell.verts.get(to); tcell=cell.id; }
+      else if(cell.halo.has(to)){ const h=cell.halo.get(to); tcell=h[0]; tcoord=[h[1],h[2]]; }
+      else continue;
+      if(!nodeCell.has(to)) nodeCell.set(to,tcell);
+      if(!nodeCoord.has(to)) nodeCoord.set(to,tcoord);
+      const spd=drive?CLASS_SPEED[flags&0x0F]*1000/3600:1.4;
+      const ng=g.get(u)+dist/spd;
+      if(ng < (g.has(to)?g.get(to):Infinity)){
+        g.set(to,ng);
+        const fromLL=nodeCoord.get(u), rev=flags&F_REV, pts=[fromLL];   // resolve geometry now, cell in hand
+        for(let p=0;p<glen;p++){ const j=rev?(glen-1-p):p, gp=goff+j; pts.push([cell.geom[gp*2]/E6, cell.geom[gp*2+1]/E6]); }
+        pts.push(tcoord);
+        came.set(to,{u, name: nmi===NO_NAME?'unnamed road':cell.names[nmi], dist, pts});
+        push(ng+H(tcoord), to);
+      }
+    }
+  }
+  if(!g.has(b.node)) return null;
+  const legs=[]; let u=b.node;
+  while(came.has(u)){ const c=came.get(u); legs.push({name:c.name,dist:c.dist,pts:c.pts}); u=c.u; }
+  legs.reverse();
+  return {legs, time:g.get(b.node)};
+}
+function tiledRouter(){ return {tiled:true, snap:nearestTiled, route:routeTiled}; }
+
+/* ================= map + interaction ================= */
+let map=null, tileLayer=null;
+let pts={start:null,end:null};
+let routeLine=null, profile='drive', activeField=null, suppressRoute=false;
+let dirOpen=false;
+
+async function setPoint(which,latlng,label){
+  const drive=(profile==='drive');
+  let h=null;
+  try{
+    toast('Finding nearest road…');
+    h=await ROUTER.snap(latlng.lat,latlng.lng,drive);
+    toast('');
+  }catch(e){
+    toast('Could not read the map there, try again',3000);
+    return;
+  }
+  if(!h){ toast('No road near there',1800); return; }
+  if(pts[which]&&pts[which].marker) pts[which].marker.remove();
+  const snap=h.ll;
+  const color=which==='start'?'#22a447':'#e0473c';
+  const icon=L.divIcon({className:'',iconSize:[20,20],iconAnchor:[10,10],
+    html:`<div style="width:16px;height:16px;border-radius:50%;background:${color};border:2.5px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,.55)"></div>`});
+  const marker=L.marker(snap,{icon,zIndexOffset:1000,keyboard:false}).addTo(map);
+  const lbl=label||`${snap[0].toFixed(5)}, ${snap[1].toFixed(5)}`;
+  pts[which]={latlng:{lat:snap[0],lng:snap[1]},handle:h,marker,label:lbl};
+  $(which+'Box').value=lbl;
+  if(which==='start' && !pts.end) activeField='end';
+  if(pts.start&&pts.end && !suppressRoute) route();
+}
+function clearPoint(which){
+  if(pts[which]&&pts[which].marker) pts[which].marker.remove();
+  pts[which]=null; $(which+'Box').value='';
+  if(routeLine){ routeLine.remove(); routeLine=null; }
+  showDirections(false);
+  activeField=which;
+  closeResults();
+}
+
+/* While a search runs the overlay covers the map so a stray tap can't change
+   the points mid-search, shows what it's pulling, and offers a way out. */
+function paintRouteProgress(){
+  if(!ROUTER || !ROUTER.tiled) return;
+  $('routeSub').textContent = cellsLoaded
+    ? `${cellsLoaded} map ${cellsLoaded===1?'area':'areas'} loaded · ${(bytesLoaded/1048576).toFixed(1)} MB`
+    : 'Loading map areas along the way…';
+}
+function beginRouting(){
+  routeAbort=false; cellsLoaded=0; bytesLoaded=0;
+  routeCtl = (typeof AbortController!=='undefined') ? new AbortController() : null;
+  $('routeTitle').textContent='Finding route…';
+  $('routeSub').textContent = (ROUTER && ROUTER.tiled) ? 'Loading map areas along the way…' : 'Searching roads…';
+  clearTimeout(overlayTimer);
+  overlayTimer=setTimeout(()=>$('routeOverlay').classList.add('show'),180);  // no flash on quick routes
+}
+function endRouting(){
+  clearTimeout(overlayTimer);
+  $('routeOverlay').classList.remove('show');
+  routeCtl=null;
+}
+function cancelRoute(){
+  routeAbort=true;
+  $('routeTitle').textContent='Cancelling…';
+  if(routeCtl){ try{ routeCtl.abort(); }catch(_){} }
+}
+
+async function route(){
+  if(!(pts.start&&pts.end)) return;
+  const drive=(profile==='drive');
+  beginRouting();
+  await new Promise(r=>setTimeout(r,15));   // let the overlay paint first
+  let res;
+  try{ res=await ROUTER.route(pts.start.handle, pts.end.handle, drive); }
+  catch(err){
+    endRouting();
+    toast(routeAbort ? 'Route cancelled' : 'Routing error: '+(err.message||err), routeAbort?2000:3200);
+    return;
+  }
+  endRouting();
+  if(res && res.cancelled){ toast('Route cancelled',2000); return; }
+  if(!res){ toast('No '+profile+' route between those points',2800); return; }
+  toast('');
+  const {steps,poly}=legsToSteps(res.legs);
+  let dist=0; for(const lg of res.legs) dist+=lg.dist;
+  if(routeLine) routeLine.remove();
+  routeLine=L.polyline(poly,{color:'#2b6cff',weight:6,opacity:.9,lineJoin:'round',lineCap:'round'}).addTo(map);
+  lastSummary = fmtDist(dist)+' · '+fmtTime(res.time);
+  $('sumBig').textContent = lastSummary;
+  $('sumSub').textContent = (drive?'Driving':'Walking')+' · '+steps.length+' step'+(steps.length!==1?'s':'');
+  const sb=$('saveRouteBtn'); sb.textContent='Save this route'; sb.classList.remove('done');
+  $('steps').innerHTML = steps.map(s=>
+    `<li><span class="man">${s.icon}</span><span class="txt">${s.verb} ${escapeHtml(s.name)}</span><span class="d">${fmtDist(s.dist)}</span></li>`).join('');
+  showDirections(true);
+  fitRoute();
+}
+function fitRoute(){
+  if(!routeLine) return;
+  const wide=window.innerWidth>=820;
+  const opts = wide
+    ? {paddingTopLeft:[380,30], paddingBottomRight:[40,40]}
+    : {paddingTopLeft:[30,150], paddingBottomRight:[30, dirOpen?300:120]};
+  map.fitBounds(routeLine.getBounds(), Object.assign({animate:true,maxZoom:16}, opts));
+}
+
+function showDirections(on){
+  const d=$('directions');
+  d.classList.toggle('show',on);
+  if(!on){ dirOpen=false; d.classList.remove('open'); }
+}
+function toggleDir(){
+  if(window.innerWidth>=820) return;   // always expanded in the sidebar
+  dirOpen=!dirOpen;
+  $('directions').classList.toggle('open',dirOpen);
+  setTimeout(fitRoute,230);
+}
+
+/* ---- search + category browse. Nothing commits by looking: tapping a row
+   shows the place, the buttons are what set a point. When you're editing a
+   field the target is obvious, so it's a single "Select"; when browsing a
+   category it offers Start and End. ---- */
+function prettyKind(k){ return k ? k.replace(/_/g,' ').replace(/^\w/,c=>c.toUpperCase()) : 'Place'; }
+const CAT_LABEL={town:'Towns',food:'Food',park:'Parks',shop:'Shops',fuel:'Fuel',stay:'Stay',
+                 health:'Health',transit:'Transit',fun:'Things to do',civic:'Civic',other:'Other'};
+const CAT_COLOR={town:'#6b7280',food:'#e8590c',park:'#2f9e44',shop:'#7048e8',fuel:'#1971c2',
+                 stay:'#c2255c',health:'#e03131',transit:'#0c8599',fun:'#f08c00',civic:'#495057',other:'#868e96'};
+let currentRows=[];                       // place indices behind whatever is listed
+
+function renderRows(idxs, mode){
+  const res=$('results');
+  currentRows=idxs;
+  if(!idxs.length){ res.innerHTML='<li class="none">Nothing found here</li>'; res.style.display='block'; return; }
+  const c=map.getCenter();
+  res.innerHTML=idxs.map((pi,i)=>{
+    const d=haversine(c.lat,c.lng,PL.y[pi],PL.x[pi]);
+    const acts = mode==='select'
+      ? `<button class="pill a" data-set="${activeField||'start'}" data-i="${i}">Select</button>`
+      : `<button class="pill a" data-set="start" data-i="${i}">Start</button>
+         <button class="pill b" data-set="end" data-i="${i}">End</button>`;
+    return `<li><div class="res">
+      <div class="info" data-go="${i}">
+        <div class="nm">${escapeHtml(PL.n[pi])}</div>
+        <div class="meta">${escapeHtml(prettyKind(PL.kind[pi]))} · ${fmtDist(d)} away</div>
+      </div><div class="acts">${acts}</div></div></li>`;
+  }).join('');
+  res.style.display='block';
+}
+
+function runSearch(which){
+  activeField=which;
+  if(activeCat>=0){ activeCat=-1; clearPins(); renderCatChips(); }
+  const q=$(which+'Box').value.trim().toLowerCase();
+  const res=$('results');
+  if(q.length<2){ closeResults(); return; }
+  if(!PL.count){
+    res.innerHTML = placesError
+      ? '<li class="none">Place list didn\'t load (SD was busy). <b data-retry="1" style="color:var(--primary);cursor:pointer">Tap to retry</b></li>'
+      : '<li class="none">Still loading places…</li>';
+    res.style.display='block'; return;
+  }
+  const starts=[], contains=[];
+  for(let i=0;i<PL.count;i++){
+    const n=PL.nl[i];
+    if(n.startsWith(q)) starts.push(i);
+    else if(n.indexOf(q)>=0) contains.push(i);
+    if(starts.length>=150) break;
+  }
+  const c=map.getCenter();
+  const cand=starts.concat(contains).slice(0,400)
+    .map(pi=>[pi,haversine(c.lat,c.lng,PL.y[pi],PL.x[pi])])
+    .sort((a,b)=>a[1]-b[1]).slice(0,25).map(v=>v[0]);   // name match, nearest first
+  renderRows(cand,'select');
+}
+function closeResults(){ $('results').style.display='none'; }
+
+/* ---- category pins for the visible area ---- */
+let activeCat=-1, pinLayer=null, catTimer=null;
+function renderCatChips(){
+  const wrap=$('cats');
+  if(!PL.count || PL.cats.length<=1){ wrap.style.display='none'; return; }
+  wrap.style.display='flex';
+  wrap.innerHTML=PL.cats.map((c,i)=> c==='other' ? '' :
+    `<button class="chip${activeCat===i?' on':''}" data-cat="${i}"
+       style="${activeCat===i?`background:${CAT_COLOR[c]};border-color:${CAT_COLOR[c]};color:#fff`:''}"
+     >${CAT_LABEL[c]||c}</button>`).join('');
+}
+function clearPins(){ if(pinLayer){ map.removeLayer(pinLayer); pinLayer=null; } }
+function toggleCat(ci){
+  activeCat = (activeCat===ci) ? -1 : ci;
+  renderCatChips();
+  if(activeCat<0){ clearPins(); closeResults(); return; }
+  activeField=null; $('startBox').blur(); $('endBox').blur();
+  refreshCat();
+}
+/* only what's on screen, capped, nearest-to-centre first: a state has tens of
+   thousands of these and drawing them all would be useless anyway */
+function placesInView(cat,cap){
+  const b=map.getBounds(), c=map.getCenter();
+  const s=b.getSouth(), n=b.getNorth(), w=b.getWest(), e=b.getEast();
+  const out=[];
+  for(let i=0;i<PL.count;i++){
+    if(PL.cat[i]!==cat) continue;
+    const y=PL.y[i], x=PL.x[i];
+    if(y<s||y>n||x<w||x>e) continue;
+    out.push(i);
+  }
+  if(out.length>cap){
+    out.sort((a,b)=>haversine(c.lat,c.lng,PL.y[a],PL.x[a])-haversine(c.lat,c.lng,PL.y[b],PL.x[b]));
+    out.length=cap;
+  }
+  return out;
+}
+function refreshCat(){
+  if(activeCat<0 || !map) return;
+  clearPins();
+  const res=$('results');
+  if(map.getZoom() < 9){
+    res.innerHTML='<li class="none">Zoom in to see places here</li>'; res.style.display='block'; return;
+  }
+  const idxs=placesInView(activeCat,200);
+  const col=CAT_COLOR[PL.cats[activeCat]]||'#2b6cff';
+  const icon=L.divIcon({className:'',iconSize:[14,14],iconAnchor:[7,7],
+    html:`<div style="width:11px;height:11px;border-radius:50%;background:${col};border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.5)"></div>`});
+  const markers=idxs.map(pi=>{
+    const m=L.marker([PL.y[pi],PL.x[pi]],{icon});
+    m.bindPopup(`<div style="text-align:center;min-width:150px">
+        <b>${escapeHtml(PL.n[pi])}</b>
+        <div style="color:#666;font-size:.78rem;margin-top:2px">${escapeHtml(prettyKind(PL.kind[pi]))}</div>
+        <div class="tapbtns">
+          <button style="background:#22a447" onclick="assignPlaceIdx(${pi},'start')">Start</button>
+          <button style="background:#e0473c" onclick="assignPlaceIdx(${pi},'end')">End</button>
+        </div></div>`);
+    return m;
+  });
+  pinLayer=L.layerGroup(markers).addTo(map);
+  renderRows(idxs,'both');
+}
+async function assignPlaceIdx(pi,which){
+  map.closePopup();
+  await setPoint(which,{lat:PL.y[pi],lng:PL.x[pi]},PL.n[pi]);
+}
+
+let previewMarker=null, previewIdx=-1;
+function clearPreview(){ if(previewMarker){ previewMarker.remove(); previewMarker=null; } previewIdx=-1; }
+function previewResult(i){
+  const pi=currentRows[i]; if(pi===undefined) return;
+  clearPreview(); previewIdx=pi;
+  map.setView([PL.y[pi],PL.x[pi]], Math.max(map.getZoom(),14));
+  previewMarker=L.marker([PL.y[pi],PL.x[pi]],{icon:L.divIcon({className:'',iconSize:[18,18],iconAnchor:[9,9],
+    html:'<div style="width:14px;height:14px;border-radius:50%;background:#2b6cff;border:2.5px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,.5)"></div>'})}).addTo(map);
+  previewMarker.bindPopup(`<div style="text-align:center;min-width:150px">
+      <b>${escapeHtml(PL.n[pi])}</b>
+      <div style="color:#666;font-size:.78rem;margin-top:2px">${escapeHtml(prettyKind(PL.kind[pi]))}</div>
+      <div class="tapbtns">
+        <button style="background:#22a447" onclick="assignPlaceIdx(${pi},'start')">Start</button>
+        <button style="background:#e0473c" onclick="assignPlaceIdx(${pi},'end')">End</button>
+      </div></div>`).openPopup();
+}
+async function assignResult(i,which){
+  const pi=currentRows[i]; if(pi===undefined) return;
+  closeResults(); clearPreview(); $('startBox').blur(); $('endBox').blur();
+  map.setView([PL.y[pi],PL.x[pi]], Math.max(map.getZoom(),14));
+  await setPoint(which,{lat:PL.y[pi],lng:PL.x[pi]},PL.n[pi]);
+}
+
+/* map tap always asks which end it is, so a stray tap can't move your trip */
+let tapLL=null;
+function onMapClick(ev){
+  closeResults(); clearPreview();
+  tapLL=ev.latlng;
+  L.popup({closeButton:false,offset:[0,-2]}).setLatLng(ev.latlng).setContent(
+    `<div style="text-align:center;min-width:150px">
+       <div style="font-size:.78rem;color:#666">${ev.latlng.lat.toFixed(5)}, ${ev.latlng.lng.toFixed(5)}</div>
+       <div class="tapbtns">
+         <button style="background:#22a447" onclick="assignTap('start')">Start here</button>
+         <button style="background:#e0473c" onclick="assignTap('end')">End here</button>
+       </div></div>`).openOn(map);
+}
+async function assignTap(which){ const ll=tapLL; map.closePopup(); if(ll) await setPoint(which,ll); }
+
+/* ---- two separate location actions ---- */
+function gpsReady(){
+  if(!window.isSecureContext || !navigator.geolocation){ $('gpsModal').classList.add('open'); return false; }
+  return true;
+}
+function getPos(){
+  return new Promise((res,rej)=>navigator.geolocation.getCurrentPosition(res,rej,
+    {enableHighAccuracy:true,timeout:8000}));
+}
+let meMarker=null;
+/* the map's crosshair: show me where I am, don't touch the trip */
+async function showMyLocation(){
+  if(!gpsReady()) return;
+  toast('Getting location…');
+  try{
+    const pos=await getPos(); toast('');
+    const ll=[pos.coords.latitude,pos.coords.longitude];
+    if(meMarker) meMarker.remove();
+    meMarker=L.marker(ll,{icon:L.divIcon({className:'',iconSize:[20,20],iconAnchor:[10,10],
+      html:'<div style="width:14px;height:14px;border-radius:50%;background:#1a73e8;border:3px solid #fff;box-shadow:0 0 0 3px rgba(26,115,232,.35)"></div>'})}).addTo(map);
+    meMarker.bindPopup('You are here').openPopup();
+    map.setView(ll, Math.max(map.getZoom(),14));
+  }catch(e){ toast('Location unavailable',2600); }
+}
+/* the planner's button: begin the trip from where I am */
+async function useMyLocationAsStart(){
+  if(!gpsReady()) return;
+  toast('Getting location…');
+  try{
+    const pos=await getPos(); toast('');
+    const ll={lat:pos.coords.latitude,lng:pos.coords.longitude};
+    map.setView([ll.lat,ll.lng], Math.max(map.getZoom(),14));
+    await setPoint('start',ll,'My location');
+  }catch(e){ toast('Location unavailable',2600); }
+}
+
+/* ---- saved routes (same localStorage habit as the music page) ---- */
+/* keyed per region so each map keeps its own saved routes */
+const SAVE_KEY='nomad_maps_routes_'+((location.pathname||'').split('/').filter(Boolean)[1]||'region');
+let savedRoutes=[], lastSummary='';
+function loadSaved(){
+  try{ savedRoutes=JSON.parse(localStorage.getItem(SAVE_KEY)||'[]'); }catch(_){ savedRoutes=[]; }
+  renderSaved();
+}
+function persistSaved(){ try{ localStorage.setItem(SAVE_KEY,JSON.stringify(savedRoutes)); }catch(_){} }
+function renderSaved(){
+  $('savedWrap').classList.toggle('show', savedRoutes.length>0);
+  $('savedCount').textContent = savedRoutes.length ? `Saved routes (${savedRoutes.length})` : 'Saved routes';
+  $('savedList').innerHTML = savedRoutes.map((r,i)=>`<li class="saved-row">
+      <div class="s-info" data-open="${i}">
+        <div class="s-nm">${escapeHtml(r.name)}</div>
+        <div class="s-meta">${escapeHtml(r.summary||'')}${r.profile==='walk'?' · Walking':''}</div>
+      </div>
+      <button class="s-del" data-del="${i}" title="Delete">×</button></li>`).join('');
+}
+function toggleSaved(){ $('savedWrap').classList.toggle('open'); }
+function saveCurrentRoute(){
+  if(!(pts.start&&pts.end&&lastSummary)) return;
+  const short=(s)=>s.split(',')[0].slice(0,28);
+  savedRoutes.unshift({
+    name: short(pts.start.label)+' → '+short(pts.end.label),
+    summary: lastSummary, profile,
+    s:{lat:pts.start.latlng.lat,lng:pts.start.latlng.lng,label:pts.start.label},
+    e:{lat:pts.end.latlng.lat,lng:pts.end.latlng.lng,label:pts.end.label},
+  });
+  if(savedRoutes.length>25) savedRoutes.length=25;
+  persistSaved(); renderSaved();
+  const b=$('saveRouteBtn'); b.textContent='Saved'; b.classList.add('done');
+}
+async function restoreSaved(i){
+  const r=savedRoutes[i]; if(!r) return;
+  $('savedWrap').classList.remove('open'); closeResults(); clearPreview();
+  clearPoint('start'); clearPoint('end');
+  if(r.profile && r.profile!==profile){
+    profile=r.profile;
+    $('mDrive').classList.toggle('on',profile==='drive'); $('mWalk').classList.toggle('on',profile==='walk');
+  }
+  suppressRoute=true;
+  await setPoint('start',{lat:r.s.lat,lng:r.s.lng},r.s.label);
+  suppressRoute=false;
+  await setPoint('end',{lat:r.e.lat,lng:r.e.lng},r.e.label);
+}
+function deleteSaved(i){ savedRoutes.splice(i,1); persistSaved(); renderSaved(); }
+
+async function setProfile(p){
+  if(p===profile) return;
+  profile=p;
+  $('mDrive').classList.toggle('on',p==='drive'); $('mWalk').classList.toggle('on',p==='walk');
+  suppressRoute=true;
+  for(const w of ['start','end']){ if(pts[w]) await setPoint(w,{lat:pts[w].latlng.lat,lng:pts[w].latlng.lng},pts[w].label); }
+  suppressRoute=false;
+  if(pts.start&&pts.end) route();
+}
+
+/* ================= boot ================= */
+function addLocateControl(){
+  const Ctl=L.Control.extend({options:{position:'topright'},onAdd(){
+    const b=L.DomUtil.create('button','locate-btn');
+    b.innerHTML='<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="7"/><line x1="12" y1="1" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="1" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="23" y2="12"/></svg>';
+    b.title='Show my location';
+    L.DomEvent.on(b,'click',(ev)=>{L.DomEvent.stop(ev);showMyLocation();});
+    return b;
+  }});
+  map.addControl(new Ctl());
+}
+
+/* The SD can only serve one reader at a time, so a burst of tile requests makes
+   the firmware answer 503 "SD busy". Every boot fetch goes through here: retry
+   with backoff instead of silently ending up with no data. */
+async function fetchRetry(url, tries=6, label=''){
+  let wait=400, lastErr='';
+  for(let i=0;i<tries;i++){
+    try{
+      const r=await fetch(url,{cache:'no-store'});
+      if(r.ok) return r;
+      lastErr='HTTP '+r.status;
+      if(r.status!==503 && r.status!==429 && i>1) break;   // not a busy signal, stop early
+    }catch(e){ lastErr=e.message||String(e); }
+    if(label) $('loadMsg').textContent=`${label} (SD busy, retrying ${i+1}/${tries})…`;
+    await new Promise(r=>setTimeout(r,wait));
+    wait=Math.min(wait*1.7,4000);
+  }
+  throw new Error((label||url)+': '+lastErr);
+}
+
+/* Places live in parallel typed arrays: a state has tens of thousands of them
+   and every pan re-filters the lot, so this stays cheap as maps get bigger.
+   Accepts the compact {kinds,cats,items} form and the older [{n,y,x,k}] form. */
+let PL={count:0,n:[],nl:[],kind:[],y:null,x:null,cat:null,cats:['other']};
+let placesError=false;
+function normalizePlaces(raw){
+  let N, get;
+  if(Array.isArray(raw)){
+    N=raw.length; get=(i)=>{const p=raw[i]; return [p.n,p.y,p.x,p.k||'',0];};
+    PL.cats=['other'];
+  }else{
+    const it=raw.items||[], kinds=raw.kinds||[];
+    N=it.length; get=(i)=>{const r=it[i]; return [r[0],r[1],r[2],kinds[r[3]]||'',r[4]||0];};
+    PL.cats=raw.cats||['other'];
+  }
+  PL.n=new Array(N); PL.nl=new Array(N); PL.kind=new Array(N);
+  PL.y=new Float64Array(N); PL.x=new Float64Array(N); PL.cat=new Uint8Array(N);
+  for(let i=0;i<N;i++){
+    const [n,y,x,k,c]=get(i);
+    PL.n[i]=n; PL.nl[i]=n.toLowerCase(); PL.y[i]=y; PL.x[i]=x; PL.kind[i]=k; PL.cat[i]=c;
+  }
+  PL.count=N;
+}
+async function loadPlaces(url){
+  try{
+    normalizePlaces(await (await fetchRetry(url,6,'Loading places')).json());
+    placesError=false;
+  }catch(e){
+    PL.count=0; placesError=true;
+    console.warn('places failed:',e.message);
+  }
+  renderCatChips();
+}
+
+async function boot(){
+  if(typeof L==='undefined'){ fatal('Leaflet failed to load. Re-copy /assets to the card.'); return; }
+  L.Icon.Default.prototype.options.imagePath='/assets/leaflet/images/';
+  try{
+    $('loadBar').style.width='8%';
+    manifest=await (await fetchRetry('./manifest.json',6,'Loading map')).json();
+    document.title='Nomad • '+(manifest.name||'Map'); $('regionName').textContent=manifest.name||'Map';
+    $('gpsOrigin').textContent=location.origin;
+    const [w,s,e,n]=manifest.bounds; const bounds=L.latLngBounds([s,w],[n,e]);
+    map=L.map('map',{zoomControl:false,maxBounds:bounds.pad(0.25)});
+    L.control.zoom({position:'topright'}).addTo(map);
+    L.control.scale({imperial:true,position:'bottomright'}).addTo(map);
+    map.options.minZoom=manifest.minZoom??6;
+    map.fitBounds(bounds);
+    addLocateControl();
+    map.on('click',onMapClick);
+    map.on('moveend',()=>{ clearTimeout(catTimer); catTimer=setTimeout(refreshCat,250); });
+
+    // Roads and places first, while the SD is quiet. Tiles are added last on
+    // purpose: a screenful of tile requests will otherwise hog the card and the
+    // firmware starts answering 503, which used to leave search with no data.
+    const R=manifest.routing||{};
+    if(R.format==='tiled'){
+      $('loadMsg').textContent='Loading map index…'; $('loadBar').style.width='30%';
+      await loadIndex();
+      ROUTER=tiledRouter();
+    } else {
+      $('loadMsg').textContent='Loading roads…'; $('loadBar').style.width='30%';
+      const gbuf=await (await fetchRetry(cardURL('routing/graph.bin'),6,'Loading roads')).arrayBuffer();
+      G=parseGraph(gbuf);
+      ROUTER=flatRouter();
+    }
+    $('loadMsg').textContent='Loading places…'; $('loadBar').style.width='60%';
+    await loadPlaces(cardURL(R.places||'routing/places.json'));
+    loadSaved();
+
+    $('loadMsg').textContent='Loading map…'; $('loadBar').style.width='90%';
+    const zTiles=manifest.maxZoom??15, zOver=zTiles+4;   // pinch past the last real tile
+    tileLayer=L.tileLayer('./'+(manifest.tilePath||'tiles/{z}/{x}/{y}.jpg'),{
+      minZoom:manifest.minZoom??6, maxZoom:zOver, maxNativeZoom:zTiles,
+      bounds, attribution:manifest.attribution||'', errorTileUrl:''}).addTo(map);
+    map.options.maxZoom=zOver;
+    $('loadBar').style.width='100%';
+    setTimeout(()=>{ $('loader').style.display='none'; map.invalidateSize(); },150);
+  }catch(err){ fatal(err.message||String(err)); }
+}
+
+/* wiring */
+for(const w of ['start','end']){
+  $(w+'Box').addEventListener('input',()=>runSearch(w));
+  $(w+'Box').addEventListener('focus',()=>{ activeField=w; if($(w+'Box').value.trim().length>=2) runSearch(w); });
+}
+/* results: Start/End commit, tapping the name only previews on the map */
+$('results').addEventListener('pointerdown',async (e)=>{
+  const retry=e.target.closest('[data-retry]');
+  if(retry){
+    e.preventDefault();
+    $('results').innerHTML='<li class="none">Retrying…</li>';
+    await loadPlaces(cardURL((manifest.routing||{}).places||'routing/places.json'));
+    runSearch(activeField||'start');
+    return;
+  }
+  const set=e.target.closest('[data-set]');
+  if(set){ e.preventDefault(); assignResult(+set.dataset.i, set.dataset.set); return; }
+  const go=e.target.closest('[data-go]');
+  if(go){ e.preventDefault(); previewResult(+go.dataset.go); }
+});
+$('cats').addEventListener('pointerdown',(e)=>{
+  const b=e.target.closest('[data-cat]');
+  if(b){ e.preventDefault(); toggleCat(+b.dataset.cat); }
+});
+$('savedList').addEventListener('pointerdown',(e)=>{
+  const del=e.target.closest('[data-del]');
+  if(del){ e.preventDefault(); deleteSaved(+del.dataset.del); return; }
+  const open=e.target.closest('[data-open]');
+  if(open){ e.preventDefault(); restoreSaved(+open.dataset.open); }
+});
+document.addEventListener('pointerdown',(e)=>{ if(!$('planner').contains(e.target)) closeResults(); });
+let rzTimer=null;
+window.addEventListener('resize',()=>{ clearTimeout(rzTimer); rzTimer=setTimeout(()=>{ if(map){ map.invalidateSize(); fitRoute(); } },200); });
+
+boot();
+</script>
+</body>
+</html>

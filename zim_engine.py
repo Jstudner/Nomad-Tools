@@ -1,7 +1,7 @@
 """
 Self-contained ZIM import: validate → copy (splitting >4 GB) → build the on-card
 search index. Ported from nomad Manager's sd/archives.py so this tools folder
-needs nothing but Python + Node — no nomad Manager install required.
+needs nothing but Python and Node, no nomad Manager install required.
 
 Cross-platform:
   • copy/split is pure Python (works everywhere);
@@ -155,10 +155,14 @@ def import_zim(src_path: str, mountpoint: str | Path, progress: Log = print) -> 
         raise RuntimeError("Source must be a .zim file")
     progress(f"{name}: valid ZIM, {_human(size)}")
 
+    # Already in this card's /Archive. Copying it over itself would delete it
+    # first (_remove_existing) and then have nothing to copy, so only index it.
+    in_place = src.resolve().parent == archive_dir.resolve()
+
     # Free-space guard on the card.
     try:
         free = shutil.disk_usage(str(archive_dir)).free
-        if free < size + (64 * 1024 * 1024):
+        if not in_place and free < size + (64 * 1024 * 1024):
             raise RuntimeError(f"Not enough space on card: need {_human(size)}, have {_human(free)} free")
     except OSError:
         pass
@@ -166,7 +170,9 @@ def import_zim(src_path: str, mountpoint: str | Path, progress: Log = print) -> 
     # ---- 2. copy / split ----
     if step:
         step("Copy to card")
-    if size <= FAT32_MAX - (16 * 1024 * 1024):
+    if in_place:
+        progress(f"{name} is already on the card, indexing it where it is")
+    elif size <= FAT32_MAX - (16 * 1024 * 1024):
         dst = archive_dir / name
         progress(f"Copying whole file (under FAT32 4 GB limit) -> {dst.name}")
         _remove_existing(archive_dir, name)
@@ -207,7 +213,10 @@ def index_archives(mountpoint: str | Path, log: Log = print) -> None:
 
     cmd = [node, str(INDEXER), root]
     log("$ " + " ".join(cmd))
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    # encoding pinned: article titles are often non-Latin, and the Windows
+    # locale codec would raise UnicodeDecodeError part way through an import
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, encoding="utf-8", errors="replace")
     pct = getattr(log, "pct", None)   # structured Progress → drives the UI bar
     for line in proc.stdout:  # type: ignore[union-attr]
         line = line.rstrip()

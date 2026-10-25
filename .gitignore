@@ -1,0 +1,6 @@
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Downloads the map tools keep next to themselves (OSM extracts, tile caches); can run to GBs
+map-data/

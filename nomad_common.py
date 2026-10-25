@@ -2,17 +2,18 @@
 """
 Shared bits every nomad card tool uses.
 
-Every tool in this folder (import_zim, optimize_images, build_index) uses these
-so they all look and behave the same: the same colours, the same live progress
-bar, and the same "pick a card" menu.
+Every tool in this folder uses these so they all look and behave the same: the
+same colours, the same live progress bar, and the same "pick a card" menu.
 
 Card discovery is cross-platform (see cards.py): Linux, Windows and macOS. This
-folder is self-contained — it needs only Python (plus Pillow for image work and
-Node for ZIM work), not a nomad Manager install — so it can be copied and run
+folder is self-contained. It needs only Python (plus Pillow for image work and
+Node for ZIM work), not a nomad Manager install, so it can be copied and run
 anywhere.
 """
 from __future__ import annotations
 
+import json
+import os
 import sys
 from pathlib import Path
 
@@ -20,6 +21,40 @@ import cards
 
 
 # ── terminal styling ──────────────────────────────────────────────────────────
+
+def _prepare_console() -> None:
+    """Make this tool's output safe on Windows.
+
+    Two separate problems, both Windows only:
+
+    1. The box-drawing and tick characters used throughout are not in cp1252 or
+       cp437. A console window copes (Python writes it as UTF-16), but the
+       moment output is redirected or piped, Python falls back to the ANSI code
+       page and the very first banner dies with UnicodeEncodeError. Forcing
+       UTF-8 with errors="replace" means the worst case is a "?" not a crash.
+    2. Colours are ANSI escapes, and conhost does not process those unless the
+       process opts in. Without this the menu prints literal <-[1;36m noise.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass                                  # already fine, or not a real stream
+    if os.name == "nt":
+        try:
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            for handle_id in (-11, -12):          # STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
+                handle = k32.GetStdHandle(handle_id)
+                mode = ctypes.c_uint32()
+                if k32.GetConsoleMode(handle, ctypes.byref(mode)):
+                    # ENABLE_VIRTUAL_TERMINAL_PROCESSING, OR'd in so the rest stays
+                    k32.SetConsoleMode(handle, mode.value | 0x0004)
+        except Exception:                         # noqa: BLE001
+            pass                                  # older Windows: colours off, still readable
+
+
+_prepare_console()
 
 _TTY = sys.stdout.isatty()
 
@@ -126,11 +161,11 @@ def choose_card(explicit: str | None = None,
     if entries:
         for i, e in enumerate(entries, 1):
             star = c("1;33", " ★ NOMAD") if e["is_nomad"] else ""
-            state = e["mountpoint"] or c("2", "not mounted — will mount")
+            state = e["mountpoint"] or c("2", "not mounted, will mount")
             free = f"free {human(e['free'])}" if e["free"] is not None else human(e["size"])
             print(f"  {i:>2}. {e['label']:<14} {(e['model'] or ''):<20} {free:<14} {state}{star}")
     else:
-        print(c("2", "  (no removable cards detected — plug one in, or type a path)"))
+        print(c("2", "  (no removable cards detected. Plug one in, or type a path)"))
     manual_n = len(entries) + 1
     print(f"  {manual_n:>2}. Enter a path manually")
     print(f"   0. Cancel")
@@ -168,3 +203,23 @@ def looks_like_nomad(root: str | Path) -> bool:
         return bool(cards.is_nomad_mount(root))
     except Exception:
         return any((Path(root) / d).is_dir() for d in ("Movies", "Shows", "Books"))
+
+
+def page_hidden(root: str | Path, page: str) -> bool:
+    """True if the card's menu hides `page` (Admin > Menu Pages, kept in /.system-ui.json).
+
+    The card template ships Games, Maps, Archive, Chat, Translate, Cookbook and
+    Workshop hidden, so content added for them is invisible until switched on.
+    """
+    try:
+        cfg = json.loads((Path(root) / ".system-ui.json").read_text(encoding="utf-8"))
+        return page in (cfg.get("hiddenPages") or [])
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def hidden_page_note(root: str | Path, page: str, label: str) -> None:
+    """Say where to turn a page on, if it is hidden on this card."""
+    if page_hidden(root, page):
+        print(c("1;33", f"  The {label} page is switched off on this card. Turn it on in "
+                        f"Admin > Menu Pages > {label}."))

@@ -1,5 +1,5 @@
 #!/bin/bash
-# ── nomad card tools — Linux/macOS launcher ──────────────────────────────────
+# nomad card tools - Linux/macOS launcher
 # Run ./start-linux.sh to open the tools menu.
 set -e
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

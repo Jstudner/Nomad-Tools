@@ -135,6 +135,8 @@ function tokenize(title) {
 // A tab/newline-safe single-line title for the .dat file.
 function cleanTitle(t) { return (t || '').replace(/[\t\r\n]+/g, ' ').trim(); }
 
+const WALK_ALL_MAX = 250000;   // full-dirent fallback ceiling; wikipedia never hits this path
+
 async function indexArchive(zim, archiveIdx, unsortedStream, titleRows) {
   const count = zim._titleIndex.count;
   const total = LIMIT ? Math.min(LIMIT, count) : count;
@@ -174,7 +176,7 @@ async function indexArchive(zim, archiveIdx, unsortedStream, titleRows) {
     // archive is still under the cap; big archives (Wikipedia) rely on their
     // own alphabetical main-page index instead.
     if (titleRows && titleRows.length <= LIST_MAX) {
-      titleRows.push(title + '\t' + target.clusterNumber + '\t' + target.blobNumber);
+      titleRows.push(title + '\t' + target.clusterNumber + '\t' + target.blobNumber + '\t' + target.namespace + '/' + target.url);
     }
     articles++;
     const pct = Math.floor(i * 100 / total);
@@ -182,11 +184,61 @@ async function indexArchive(zim, archiveIdx, unsortedStream, titleRows) {
       log(`    ${zim.__id}: ${pct}% (${articles} articles, ${pairs} words)`);
       // Machine-readable progress for the manager UI: the title walk is the first
       // ~45% of "Build search index" (sort ~5%, sharding the last ~50%).
-      log(`@@PCT ${Math.floor(pct * 0.45)} indexing titles — ${articles.toLocaleString()} articles`);
+      log(`@@PCT ${Math.floor(pct * 0.45)} indexing titles: ${articles.toLocaleString()} articles`);
       lastPct = pct;
     }
   }
-  return { articles, pairs };
+  // zimit fallback: a title listing with only the landing page in it hides
+  // the whole site. Walk every dirent by URL order instead and index the
+  // html entries the listing skipped.
+  const entryCount = zim.header.entryCount || 0;
+  if (articles <= Math.max(2, entryCount * 0.01) && entryCount > articles && entryCount <= WALK_ALL_MAX) {
+    log(`  listing has ${articles} article(s) but the ZIM holds ${entryCount} entries; walking all dirents`);
+    const seen = new Set();
+    if (titleRows) for (const r of titleRows) { const f = r.split('\t'); seen.add(f[1] + ':' + f[2]); }
+    for (let i = 0; i < entryCount; i++) {
+      let e;
+      try { e = await zim._direntByUrlIndex(i); } catch (err) { continue; }
+      if (e.namespace !== 'C' && e.namespace !== 'A') continue;
+      let target = e;
+      if (e.isRedirect) {
+        try { target = await zim.resolveRedirect(e); } catch (err) { continue; }
+        if (target.isRedirect) continue;
+      }
+      const mime = target.mimeType || '';
+      const isDoc = /^application\/(pdf|epub\+zip)/.test(mime) || /^(video|audio)\//.test(mime);
+      if (mime.indexOf('text/html') !== 0 && !isDoc) continue;
+      const key = target.clusterNumber + ':' + target.blobNumber;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const title = cleanTitle((e.title && e.title !== e.url) ? e.title : humanizeUrl(e.url));
+      if (!title) continue;
+      const words = tokenize(title);
+      const suffix = '\t' + title + '\t' + archiveIdx + '\t' + target.clusterNumber + '\t' + target.blobNumber + '\n';
+      for (const w of words) unsortedStream.write(w + suffix);
+      const fullKey = title.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      if (fullKey && words.length > 1) { unsortedStream.write(fullKey + suffix); pairs++; }
+      pairs += words.length;
+      articles++;
+      if (titleRows && titleRows.length <= LIST_MAX) {
+        titleRows.push(title + '\t' + target.clusterNumber + '\t' + target.blobNumber + '\t' + target.namespace + '/' + target.url);
+      }
+    }
+    log(`  after full walk: ${articles} articles (documents included)`);
+  }
+  return { articles, pairs, walkedAll: articles > 0 && count <= Math.max(2, (zim.header.entryCount || 0) * 0.01) };
+}
+
+// A readable title out of a bare URL path: last segment, dashes to spaces.
+function humanizeUrl(url) {
+  let seg = String(url || '').replace(/\/+$/, '');
+  seg = seg.substring(seg.lastIndexOf('/') + 1);
+  seg = seg.replace(/\.(html?|php)$/i, '').replace(/[-_]+/g, ' ').trim();
+  if (!seg) {
+    // a bare host or "x/" root: use the host itself
+    seg = String(url || '').split('/')[0];
+  }
+  return seg;
 }
 
 async function main() {
@@ -227,10 +279,14 @@ async function main() {
     if (zim._titleIndex.mode === 'none') { log('  ! no title index in this ZIM; skipping'); src.close(); continue; }
 
     // Main page location (for a future "browse" landing).
-    let mainCluster = -1, mainBlob = -1;
+    let mainCluster = -1, mainBlob = -1, mainUrl = null;
     try {
-      const mp = await zim.getMainPage();
-      if (mp && !mp.isRedirect) { mainCluster = mp.clusterNumber; mainBlob = mp.blobNumber; }
+      let mp = await zim.getMainPage();
+      if (mp && mp.isRedirect) mp = await zim.resolveRedirect(mp);
+      if (mp && !mp.isRedirect) {
+        mainCluster = mp.clusterNumber; mainBlob = mp.blobNumber;
+        mainUrl = mp.namespace + '/' + mp.url;
+      }
     } catch (e) {}
 
     const titleRows = [];
@@ -252,10 +308,15 @@ async function main() {
       log(`  → wrote browse list (${titleRows.length} titles)`);
     }
 
+    // zimit channel scrapes (channel.json present) browse better as a list
+    // of native video pages than as their SPA; the reader keys off `videos`
+    const isChannel = !!(await zim.findByUrl('C', 'channel.json'));
     manifestArchives.push({
       idx, id: a.id, name: a.id, split: a.split, totalSize: a.totalSize,
       parts: a.parts.map(p => ({ path: p.rel, size: p.size })),
-      articleCount: res.articles, mainCluster, mainBlob, hasList,
+      articleCount: res.articles, mainCluster, mainBlob, mainUrl, hasList,
+      app: !!res.walkedAll && !isChannel,
+      videos: isChannel,
     });
     log(`  → ${res.articles} articles, ${res.pairs} word entries`);
     src.close();
@@ -272,8 +333,8 @@ async function main() {
   log(`\nSorting ${totalPairs} word entries …`);
   log(`@@PCT 47 sorting ${totalPairs.toLocaleString()} word entries`);
   // Cross-platform sort. On Linux/mac the system `sort` is fast and keeps memory
-  // flat; on Windows (whose sort.exe is incompatible) — or anywhere the system
-  // sort is missing — we fall back to a built-in external merge sort. Both paths
+  // flat; on Windows (whose sort.exe is incompatible), or anywhere the system
+  // sort is missing, we fall back to a built-in external merge sort. Both paths
   // produce byte-identical output to `LC_ALL=C sort -t '\t' -k1,1 -s`: a stable,
   // unsigned-byte sort on column 1 (the word key). See sortByKey().
   await sortByKey(tmpUnsorted, tmpSorted, log);
@@ -378,7 +439,7 @@ function keyOf(line) { const t = line.indexOf('\t'); return t < 0 ? line : line.
 
 // Sort inPath -> outPath. Prefers the system sort off Windows; else built-in.
 async function sortByKey(inPath, outPath, log) {
-  // NOMAD_FORCE_JS_SORT=1 forces the built-in sort even on Linux/mac — lets you
+  // NOMAD_FORCE_JS_SORT=1 forces the built-in sort even on Linux/mac, lets you
   // exercise the Windows path in tests. Output is identical either way.
   if (process.platform !== 'win32' && !process.env.NOMAD_FORCE_JS_SORT) {
     const env = Object.assign({}, process.env, { LC_ALL: 'C' });
@@ -392,7 +453,7 @@ async function sortByKey(inPath, outPath, log) {
 }
 
 // Stable in-place sort of a line array by key (V8's Array.sort is stable, so
-// equal keys keep input order — matching GNU -s). Precomputes keys once.
+// equal keys keep input order, matching GNU -s). Precomputes keys once.
 function stableSortLines(lines) {
   const keyed = lines.map(line => ({ k: keyOf(line), line }));
   keyed.sort((x, y) => (x.k < y.k ? -1 : x.k > y.k ? 1 : 0));

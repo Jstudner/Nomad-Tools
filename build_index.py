@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-build_index — regenerate the browse index nomad reads from a card.
+build_index: regenerate the browse index nomad reads from a card.
 
 nomad can't scan a big SD card fast on-device, so it reads pre-built NDJSON
 index files from /.system-index instead. Run this whenever you add or remove
@@ -9,7 +9,7 @@ media and the index is refreshed to match. Nothing is deleted from your card.
     ./build_index.py                 # pick a card, then index it
     ./build_index.py /media/me/NOMAD
 
-The index format matches the firmware's own indexer exactly — the scan/hash
+The index format matches the firmware's own indexer exactly; the scan/hash
 logic below is intentionally kept byte-for-byte identical to the device's, so
 do not "clean up" those functions.
 """
@@ -27,14 +27,15 @@ VERSION = "2.1.0"
 INDEX_DIR = ".system-index"
 
 # Buckets to index (matching indexWorkerTask order)
-BUCKETS = ["/Shows", "/Music", "/Movies", "/Books", "/Gallery", "/Files", "/"]
+BUCKETS = ["/Shows", "/Music", "/Movies", "/Books", "/Gallery", "/Files", "/Games",
+           "/Cookbook", "/Workshop", "/"]
 
 # Folders to skip (matching firmware)
 SKIP_FOLDERS = {".system-index", "System Volume Information", "Archive", "$RECYCLE.BIN",
                 ".Trash", ".Spotlight-V100", ".fseventsd", ".TemporaryItems"}
 
 
-# ── firmware-matched core (do not modify — must match the device byte-for-byte) ─
+# firmware-matched core. Do not modify: must match the device byte for byte.
 
 def sanitize_token(s: str) -> str:
     """Sanitize a directory name into a filename token (matching firmware)"""
@@ -163,7 +164,14 @@ def write_index_for_dir(dir_path: Path, output_filename: str, root_path: Path) -
     if not dir_path.exists() or not dir_path.is_dir():
         return False, 0
     try:
-        norm_path = normalize_path("/" + str(dir_path.relative_to(root_path)).replace('\\', '/'))
+        # relative_to(self) is Path('.'), which would make the card root normalize
+        # to "/." instead of "/". That misses the isRoot test below, so the root
+        # index got built at depth 10 (the whole card) with a "/." header, and its
+        # sig could never match the firmware's depth-0 prepass. The device then
+        # rebuilt root.index.ndjson on every boot, which is the scan this tool
+        # exists to avoid. Keep the "." case mapped to "/".
+        rel = str(dir_path.relative_to(root_path)).replace('\\', '/')
+        norm_path = normalize_path("/" if rel == "." else "/" + rel)
     except ValueError:
         norm_path = "/"
 
@@ -233,6 +241,10 @@ _NESTED = {   # bucket -> (label, filename prefix) for its per-subfolder indexes
     "/Shows": ("shows", "Shows"),
     "/Music": ("albums/playlists", "Music"),
     "/Books": ("book subfolders", "Books"),
+    "/Gallery": ("gallery folders", "Gallery"),
+    "/Files": ("file folders", "Files"),
+    "/Cookbook": ("recipe categories", "Cookbook"),
+    "/Workshop": ("model collections", "Workshop"),
 }
 
 
@@ -283,44 +295,31 @@ def run(dest: str | None = None) -> int:
         if bucket in _NESTED:
             total_items += _index_nested(bucket, bucket_path, root_path, progress)
 
-    _write_media_json(root_path)
+    _remove_legacy_media_json(root_path)
 
     elapsed = time.time() - start
     buckets_done = len([b for b in BUCKETS
                         if (root_path if b == "/" else root_path / b.lstrip('/')).exists()])
     print(nc.c("1", f"\nDone: {total_items:,} item(s) across {buckets_done} bucket(s) "
                     f"in {elapsed:.1f}s"))
-    print(nc.c("2", "  Eject safely — nomad will pick up the new index on next boot."))
+    print(nc.c("2", "  Eject safely. Nomad will pick up the new index on next boot."))
     return 0
 
 
-def _write_media_json(root_path: Path) -> None:
-    """Write the media.json summary (matching firmware format)."""
-    index_dir = root_path / INDEX_DIR
-    entries = []
-    if index_dir.exists():
-        for index_file in sorted(index_dir.glob("*.ndjson")):
-            try:
-                with open(index_file, 'r', encoding='utf-8') as f:
-                    header = f.readline().strip()
-            except Exception:
-                continue
-            pos = header.find('"count":')
-            if pos < 0:
-                continue
-            start = pos + 8
-            end = start
-            while end < len(header) and header[end].isdigit():
-                end += 1
-            count_str = header[start:end] if end > start else "0"
-            entries.append(f'    "{index_file.name}": {count_str}')
+def _remove_legacy_media_json(root_path: Path) -> None:
+    """Delete a /media.json left by older versions of this tool.
 
-    media_json = '{\n  "generated": true,\n  "buckets": {\n' + ',\n'.join(entries) + '\n  }\n}\n'
+    The firmware never writes one. At boot it reads one as a card from before
+    the NDJSON index, deletes it and rescans the whole card, which is the scan
+    this tool exists to avoid."""
+    legacy = root_path / "media.json"
+    if not legacy.is_file():
+        return
     try:
-        (root_path / "media.json").write_text(media_json, encoding='utf-8')
-        print(nc.c("2", "\n  wrote media.json summary"))
-    except Exception as e:
-        print(nc.c("31", f"\n  failed to write media.json: {e}"))
+        legacy.unlink()
+        print(nc.c("2", "\n  removed an old media.json (nomad rescans the whole card when it finds one)"))
+    except OSError as e:
+        print(nc.c("31", f"\n  could not remove the old media.json: {e}"))
 
 
 def main() -> int:

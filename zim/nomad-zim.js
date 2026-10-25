@@ -1,29 +1,14 @@
-/* nomad-zim.js - pure-JS ZIM archive reader for Jcorp Nomad.
- *
- * The ESP32 only serves raw byte ranges (same handler that streams movies);
- * every piece of ZIM intelligence - header parse, binary-searched title
- * lookups, cluster decompression - runs client-side in the browser.
- *
- * Design constraints this file encodes:
- *  - All small reads go through a 2KB-aligned LRU block cache. 2KB matters:
- *    the firmware's range handler serves requests <= 2048 bytes from a cheap
- *    malloc'd "probe" path instead of opening a streaming handle. Binary
- *    searches converge, so later steps hit already-cached blocks.
- *  - One shared fetch queue (concurrency 2) across ALL open archives so a
- *    search fan-out can never flood the ESP32 with parallel sockets.
- *  - 503 ("SD busy" / "Indexing in progress") is retried with backoff, it is
- *    an expected transient on this device, not an error.
- *  - Split ZIMs (name.zimaa, name.zimab, ... for FAT32's 4GB limit) are
- *    handled by HttpSource, which maps logical offsets onto parts.
- *  - Title search compares raw UTF-8 bytes (ZIM title order is byte order,
- *    case-sensitive). Case-insensitive behaviour comes from probing a few
- *    case variants of the query, not from lowercasing the index.
- *
- * Works in the browser (window.NomadZim) and under Node (module.exports)
- * so the exact code that ships can be tested on a PC against real ZIMs.
- * Decompressors (xz, zstd) are injected by the host page - see
- * ZimArchive opts.decompressors.
- */
+/* nomad-zim.js - pure-JS ZIM reader for Nomad.
+ * The ESP32 only serves raw byte ranges (same handler as movies), all the ZIM
+ * smarts (header parse, title lookups, cluster decompress) run here in the browser.
+ * Things that matter on-device:
+ *  - reads go through an LRU block cache
+ *  - one shared fetch queue so a search cant flood the ESP32 with sockets
+ *  - 503 (SD busy / indexing) is retried, its an expected transient not an error
+ *  - split ZIMs (.zimaa/.zimab, FAT32's 4GB limit) are handled by HttpSource
+ *  - title search compares raw UTF-8 bytes (case handled by probing a few variants)
+ * Runs in the browser (window.NomadZim) and Node (module.exports) so the shipped
+ * code can be tested on a PC. Decompressors (xz/zstd) are injected by the host page. */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
   else root.NomadZim = factory();
@@ -32,22 +17,13 @@
 
   var ZIM_MAGIC = 0x44D495A;
   var COMP_NONE = 0, COMP_NONE2 = 1, COMP_XZ = 4, COMP_ZSTD = 5;
-  // Reads are 8KB-aligned and cached. The size is deliberately ABOVE the
-  // firmware's 2048-byte probe threshold: the probe path uses
-  // beginResponse_P over a heap buffer it frees immediately, which corrupts
-  // under the rapid-fire tiny reads a ZIM search issues (freed buffer gets
-  // re-malloc'd before the async send flushes). Reads > 2048 take the proven
-  // streaming file-handle path instead. 8KB also gives good locality for the
-  // converging tail of a title binary search and the small-archive title scan.
+  // 8KB reads, kept ABOVE the firmware's 2048-byte probe threshold on purpose -
+  // the probe path frees its heap buffer immediately and corrupts under rapid tiny
+  // reads, so anything >2048 takes the safe streaming path instead
   var BLOCK_SIZE = 8192;
-  var BLOCK_CACHE_MAX = 128;      // ~1MB of cached index blocks per archive.
-                                  // Sized so one article's WHOLE lookup working
-                                  // set (urlPtr binary-search path + the
-                                  // _assets_/<hash>/ dirent neighborhood all its
-                                  // images share) stays resident - after the
-                                  // first image, later ones resolve with zero
-                                  // device reads.
-  var CLUSTER_CACHE_MAX = 4;      // decompressed clusters (can be ~2MB each)
+  var BLOCK_CACHE_MAX = 128;      // ~1MB of index blocks. big enough that one article's
+                                  // whole lookup set stays cached, so later images need zero device reads
+  var CLUSTER_CACHE_MAX = 16;      // decompressed clusters (can be ~2MB each)
   var DIRENT_CACHE_MAX = 512;
   var MAX_CLUSTER_BYTES = 96 * 1024 * 1024;  // big enough for a ZIM-embedded video/epub blob's cluster
 
@@ -112,23 +88,17 @@
     }
   };
 
-  // Concurrency 1 is REQUIRED on-device: the firmware streams ZIM byte-ranges
-  // from a SINGLE reused file handle (see its [Stream] Reuse #N seek logs). Two
-  // in-flight range requests seek that one handle underneath each other and crash
-  // the firmware (ERR_CONNECTION_RESET -> reboot). Text survives at higher
-  // concurrency because it's only a few reads; an image-heavy article fires
-  // hundreds, so the race is a near-certainty. Serialize every ZIM read.
+  // concurrency 1 is REQUIRED - the firmware streams ZIM ranges from one reused file
+  // handle, two in-flight requests seek it under each other and crash the device.
+  // serialize every ZIM read
   var sharedQueue = new FetchQueue(1);
 
   /* ---------------- HTTP byte source (split-aware) ---------------- */
 
   // parts: [{path:'/Archive/foo.zimaa', size:123}, ...] in order.
-  // opts.via: URL prefix routing reads to a range-honoring endpoint. On the
-  // device this MUST be '/media?file=' - fetching /Archive/*.zim by its own URL
-  // hits the firmware's whole-file fallback that ignores Range (streams the
-  // entire 2GB ZIM = "loads forever"). '/media' maps straight to the range
-  // handler. Default matches NomadArchiveIndex.VIA; pass '' for a PC test
-  // server that honors Range directly.
+  // opts.via: read prefix. on-device this MUST be '/media?file=' - fetching a .zim by
+  // its own URL hits the whole-file fallback that ignores Range (streams the whole 2GB =
+  // "loads forever"). pass '' only for a PC test server that honors Range directly.
   function HttpSource(parts, opts) {
     opts = opts || {};
     if (!parts || !parts.length) throw new Error('HttpSource: no parts');
@@ -158,10 +128,7 @@
       }).then(function (resp) {
         if (timer) clearTimeout(timer);
         if (resp.status === 206 || resp.status === 200) {
-          // A body that dies mid-read (device truncated the response, e.g. an
-          // SD-mutex timeout in its stream filler, or the connection reset) is
-          // as retryable as a 503 - without this flag one flaky body fails the
-          // whole image and feeds the circuit breaker.
+          // a body that dies mid-read (device truncated it) is retryable like a 503
           return resp.arrayBuffer().then(
             function (ab) { return new Uint8Array(ab); },
             function (bodyErr) { bodyErr.retryable = true; throw bodyErr; }
@@ -185,22 +152,18 @@
     return this.queue.run(doFetch);
   };
 
-  // Cap any single range request. One huge request (a full compressed cluster,
-  // a ZIM-embedded video blob) keeps the ESP32 streaming flat-out for seconds;
-  // shorter sequential requests with a breather between them bound how long the
-  // device goes without a pause, at the cost of a little latency on big reads.
-  // Chunks of one read are strictly forward within a part, so the firmware's
-  // reused file handle only ever seeks forward (cheap on FAT32) between them.
-  HttpSource.MAX_REQ_BYTES = 256 * 1024;
-  HttpSource.CHUNK_BREATHER_MS = 25;
+  // cap any one range request. a huge read keeps the ESP32 flat-out for seconds, so
+  // split into sequential capped reads with a breather. chunks go forward-only in a
+  // part so the reused file handle only seeks forward (cheap on FAT32)
+  HttpSource.MAX_REQ_BYTES = 1024 * 1024;
+  HttpSource.CHUNK_BREATHER_MS = 0;
 
   HttpSource.prototype.read = function (offset, length) {
     var self = this;
     if (offset >= this.size) return Promise.resolve(new Uint8Array(0));
     if (offset + length > this.size) length = this.size - offset;
 
-    // Map the logical read onto parts, then split anything bigger than
-    // MAX_REQ_BYTES into sequential capped requests.
+    // map the read onto parts, split anything over MAX_REQ_BYTES into capped requests
     var partStart = 0;
     var chunks = [];
     var CAP = HttpSource.MAX_REQ_BYTES;
@@ -320,9 +283,8 @@
 
   /* ----- open / header ----- */
 
-  // Full open: header + mime list + title index. Needed for live title search
-  // (findByUrl/suggest). On the device we avoid this for big ZIMs - see the
-  // preindexed path (NomadArchiveIndex) and openHeaderOnly() below.
+  // full open: header + mime list + title index. needed for live title search.
+  // on-device we avoid this for big ZIMs, see openHeaderOnly() below
   ZimArchive.prototype.open = function () {
     var self = this;
     return this.openHeaderOnly().then(function () {
@@ -334,12 +296,9 @@
     });
   };
 
-  // Header-only open: one 80-byte read. Enough to fetch an article by
-  // (cluster, blob) via getContentAt() - the cluster pointer table and blob
-  // decode need only the header, not the mime list or title index. This is the
-  // cheap path the preindexed reader uses: a preindexed search already knows
-  // exactly where the article lives, so opening it touches the giant ZIM only
-  // for the cluster read itself.
+  // header-only open: one 80-byte read, enough to fetch an article by (cluster, blob)
+  // via getContentAt(). the cheap path the preindexed reader uses - it already knows
+  // where the article is, so opening one only touches the ZIM for the cluster read
   ZimArchive.prototype.openHeaderOnly = function () {
     var self = this;
     if (self.header) return Promise.resolve(self.header);
@@ -360,7 +319,10 @@
         layoutPage: readU32(buf, 68),
         checksumPos: readU64(buf, 72)
       };
-      return self.header;
+      // the mime list is one tiny read right after the header, and without it
+      // every dirent reports octet-stream, which breaks link navigation's
+      // "is this an article" check
+      return self._readMimeTypes().then(function () { return self.header; });
     });
   };
 
@@ -464,6 +426,53 @@
     return step();
   };
 
+  // Exact title -> dirent. The words index stores hits as (title, cluster,
+  // blob) with no URL, and the URL is what real link navigation resolves
+  // against. Binary search the title listing, then scan a short window since
+  // titles are not unique. cluster/blob, when given, pick the right duplicate.
+  ZimArchive.prototype.findByTitle = function (title, cluster, blob) {
+    var self = this;
+    // header-only opens never touched the title listing; bring it up on demand
+    if (!this._titleIndex) {
+      return this._initTitleIndex().then(function () {
+        return self.findByTitle(title, cluster, blob);
+      });
+    }
+    if (this._titleIndex.mode === 'none') return Promise.resolve(null);
+    var headerMode = this._titleIndex.mode === 'header';
+    var want = textEncoder.encode(title);
+    var target = want;
+    if (headerMode) {
+      // header lists key on (namespace, title); probe the content namespaces
+      target = new Uint8Array(want.length + 1);
+      target[0] = 'A'.charCodeAt(0);
+      target.set(want, 1);
+    }
+    var scan = function (i, left, fallback) {
+      if (left <= 0 || i >= self._titleIndex.count) return Promise.resolve(fallback);
+      return self._direntByTitleIndex(i).then(function (e) {
+        if (e.title !== title) return fallback;  // sorted: first mismatch ends it
+        return (e.isRedirect ? self.resolveRedirect(e) : Promise.resolve(e)).then(function (t) {
+          if (t && !t.isRedirect) {
+            if (cluster == null || (t.clusterNumber === cluster && t.blobNumber === blob)) return t;
+            if (!fallback) fallback = t;   // right title, different copy
+          }
+          return scan(i + 1, left - 1, fallback);
+        });
+      }).catch(function () { return scan(i + 1, left - 1, fallback); });
+    };
+    var probe = function (bytes) {
+      return self._titleLowerBound(bytes).then(function (lo) { return scan(lo, 24, null); });
+    };
+    return probe(target).then(function (hit) {
+      if (hit || !headerMode) return hit;
+      var t2 = new Uint8Array(want.length + 1);
+      t2[0] = 'C'.charCodeAt(0);
+      t2.set(want, 1);
+      return probe(t2);
+    });
+  };
+
   /* ----- blob / cluster access ----- */
 
   // Locate a blob's raw file position if (and only if) its cluster is
@@ -545,12 +554,9 @@
     // Cluster already decompressed and cached: slice it for free.
     var cached = lruGet(this._clusters, clusterNumber);
     if (cached) return Promise.resolve(fromCluster(cached));
-    // Uncompressed cluster: read ONLY this blob's bytes. Every image in a
-    // Wikipedia "maxi" ZIM lives in an uncompressed ~2MB cluster, and pulling
-    // the whole cluster to extract a ~10KB thumbnail meant ~200x the data -
-    // a 1.5s max-rate SD+WiFi burst per image that rebooted the ESP32.
-    // Compressed clusters (article text) still need the full extent, which
-    // stays small (~250KB zstd) and cached.
+    // uncompressed cluster: read ONLY this blob's bytes. images live in uncompressed
+    // ~2MB clusters, pulling the whole thing for a ~10KB thumb was ~200x the data and
+    // rebooted the ESP32. compressed clusters (text) still need the full extent (small)
     return this._locateRawBlob(clusterNumber, blobNumber).then(function (raw) {
       if (raw) return self.src.read(raw.offset, raw.size);
       return self._readCluster(clusterNumber).then(fromCluster);
@@ -568,24 +574,19 @@
     });
   };
 
-  // Read an article straight from a known cluster/blob - no dirent lookup, no
-  // binary search. This is the fast path the preindexed search uses on the
-  // device: the sidecar index stores (cluster, blob) per article, so opening
-  // one is just a cluster-pointer read + one cluster read + decompress. The
-  // giant ZIM is touched only for the single article the user clicked.
+  // read an article straight from a known cluster/blob - no lookup, no binary search.
+  // the preindexed search stores (cluster, blob) per article, so opening one is just a
+  // pointer read + cluster read + decompress. the ZIM is touched only for that article
   ZimArchive.prototype.getContentAt = function (clusterNumber, blobNumber, mimeType) {
     return this.readBlob(clusterNumber, blobNumber).then(function (data) {
-      return { data: data, mimeType: mimeType || 'text/html', entry: null };
+      return { data: data, mimeType: mimeType || '', entry: null };
     });
   };
 
   /* ----- title index ----- */
 
-  // Preference order:
-  //  1. X/listing/titleOrdered/v1 (article-only, modern ZIMs). If its cluster
-  //     is uncompressed (it normally is) we random-access it in place on the
-  //     SD card; otherwise we pull the cluster once and keep it in memory.
-  //  2. The header title pointer list (all entries, sorted by ns+title).
+  // prefer X/listing/titleOrdered/v1 (modern ZIMs, random-access in place if
+  // uncompressed), else fall back to the header title pointer list
   ZimArchive.prototype._initTitleIndex = function () {
     var self = this;
     return this.findByUrl('X', 'listing/titleOrdered/v1').then(function (e) {
@@ -673,12 +674,9 @@
     return out;
   }
 
-  // Only *tiny* archives get a full in-memory title table for case-insensitive
-  // substring matching (e.g. a 7-video TED collection). Loading the table means
-  // one scattered dirent read PER title, which is far too expensive over the
-  // device's network for anything bigger - those stay on the ~40-read prefix
-  // binary search. Kept low deliberately; raising it reintroduces multi-second
-  // full scans that starve the fast archives sharing the read queue.
+  // only tiny archives (e.g. a 7-video TED collection) get a full in-memory title
+  // table - it's one dirent read PER title, way too slow over the network for anything
+  // bigger. keep this low, raising it brings back multi-second scans
   var SMALL_ARCHIVE_MAX_TITLES = 256;
 
   ZimArchive.prototype.isSmall = function () {
@@ -686,10 +684,8 @@
            this._titleIndex.count <= SMALL_ARCHIVE_MAX_TITLES;
   };
 
-  // Loads the full title table (tiny archives only). Reads are fired together
-  // so the shared FetchQueue pipelines them (bounded to its concurrency)
-  // instead of one strictly-serial round trip per title. Cached; safe to call
-  // repeatedly (e.g. from prewarm() and from suggest()).
+  // loads the full title table (tiny archives only). fires reads together so the
+  // queue pipelines them instead of one round trip per title. cached, safe to recall
   ZimArchive.prototype._loadAllTitles = function () {
     if (this._allTitles) return this._allTitles;
     var self = this;
@@ -707,9 +703,8 @@
     return this._allTitles;
   };
 
-  // Background pre-warm hook: open() is already done by the time this is
-  // called; for tiny archives, pull the substring table now (off the search
-  // critical path). No-op for large archives.
+  // pre-warm hook: for tiny archives pull the substring table now, off the search path.
+  // no-op for large archives
   ZimArchive.prototype.prewarm = function () {
     if (this.isSmall()) return this._loadAllTitles().catch(function () {});
     return Promise.resolve();
@@ -842,23 +837,18 @@
 
   /* ---------------- preindexed search (NomadArchiveIndex) ---------------- */
   //
-  // Searches the compact sidecar index built on a PC by nomad-manager's
-  // zim_indexer.js (see /Archive/.nomad-zim/). The device never binary-searches
-  // a multi-GB ZIM: a query is answered with the skip table (fetched once, held
-  // in RAM) plus ONE range read of a small chunk of words.dat. Opening a result
-  // reads only the article's cluster from its ZIM (openHeaderOnly + getContentAt).
-  //
-  //   words.dat : sorted lines  word \t title \t archiveIdx \t cluster \t blob
-  //   words.skp : { step, keys: [[word, byteOffset], ...] }  sampled every step
-  //   manifest.json : { version, archives:[{idx,id,name,parts:[{path,size}],...}] }
+  // searches the sidecar index built on a PC by nomad-manager's zim_indexer.js.
+  // the device never binary-searches a multi-GB ZIM - a query is the skip table
+  // (fetched once, in RAM) + ONE small range read of words.dat. opening a result
+  // reads only that article's cluster.
+  //   words.dat : sorted  word \t title \t archiveIdx \t cluster \t blob
+  //   words.skp : { step, keys: [[word, byteOffset], ...] }
+  //   manifest.json : { version, archives:[...] }
 
   function NomadArchiveIndex(baseUrl) {
     this.base = baseUrl || '/Archive/.nomad-zim';
-    // Route index reads through /media?file=, which maps DIRECTLY to the
-    // firmware's range handler. Fetching /Archive/.nomad-zim/words.dat by its
-    // own URL falls through to the whole-file fallback that ignores Range and
-    // streams all 118MB (a ~minutes-long "hang"); /media honors Range. Set to
-    // '' to fetch paths directly (e.g. a PC test server that honors Range).
+    // route index reads through /media?file= (honors Range). fetching words.dat by
+    // its own URL hits the whole-file fallback that ignores Range = minutes-long hang
     this.via = (typeof NomadArchiveIndex.VIA === 'string') ? NomadArchiveIndex.VIA : '/media?file=';
     this.manifest = null;
     this.skip = null;
@@ -870,17 +860,11 @@
     return this.via ? this.via + encodeURIComponent(p) : p;
   };
 
-  // Fetch a URL fully under one timeout - the timer must survive until the
-  // BODY is read, not just the headers, or a device that streams a huge body
-  // (the Range-ignored fallback) never trips the timeout. Returns
-  // { ok, status, text() , json() }.
+  // fetch a URL under one timeout - the timer has to survive until the BODY is read,
+  // or a huge streamed body never trips it. returns { ok, status, text(), json() }
   NomadArchiveIndex.prototype._fetch = function (url, range, timeoutMs) {
-    // Route index (search / shard) reads through the SAME sharedQueue as ZIM
-    // content reads so the device never sees a search request and an image
-    // request in flight at once. On-device the firmware keeps ONE open archive
-    // handle (see its "Archive single-handle" logic); concurrent archive reads
-    // would fight over it. Serializing here keeps archive access strictly
-    // one-at-a-time end to end.
+    // same sharedQueue as ZIM reads so a search and an image are never in flight at
+    // once - the firmware keeps one archive handle and they'd fight over it
     return sharedQueue.run(function () {
       var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
       var timer = ctl ? setTimeout(function () { ctl.abort(); }, timeoutMs || 20000) : null;
@@ -899,10 +883,8 @@
     if (this._loadP) return this._loadP;
     var self = this;
     var parse = function (res) { try { return (res.ok || res.status === 200) ? JSON.parse(res.body) : null; } catch (e) { return null; } };
-    // Sharded index (v2, full Wikipedia): manifest only - each shard's skip table
-    // (words-<c>.skp) is fetched lazily by _getShard when a query needs it, so the
-    // device never holds a multi-MB global skip table in RAM. Legacy index (v1,
-    // single words.dat): also grab the one global words.skp up front.
+    // sharded (v2, full Wikipedia): manifest only, shards fetched lazily so we never
+    // hold a multi-MB skip table in RAM. legacy (v1): grab the one words.skp up front
     this._shardCache = {};
     this._loadP = self._fetch(self._url('manifest.json')).then(parse).then(function (mani) {
       self.manifest = mani;
@@ -928,11 +910,9 @@
     return this.manifest && this.manifest.archives ? this.manifest.archives[idx] : null;
   };
 
-  // Resolve the shard a word key belongs to (its first char) into a uniform
-  // { keys, datUrl, datSize } handle. Sharded: lazily fetch+cache words-<c>.skp.
-  // Legacy single index: return one virtual shard over the whole words.dat, so
-  // search/listRange share identical scanning code for both formats. Returns null
-  // if the sharded index has no shard for that char (no such first letter).
+  // resolve a word's shard (its first char) to a { keys, datUrl, datSize } handle.
+  // sharded = lazily fetch/cache words-<c>.skp; legacy = one virtual shard over the whole
+  // words.dat so both formats share the same scanning code. null if no such shard
   NomadArchiveIndex.prototype._getShard = function (ch) {
     var self = this;
     if (!this.sharded) {
@@ -964,10 +944,8 @@
     return at;
   };
 
-  // Query -> [{title, archiveId, archiveIdx, cluster, blob}]. Matches on the
-  // first query word as a sorted prefix (so "einstein" finds "Albert Einstein",
-  // indexed under the word "einstein"), then, for multi-word queries, keeps only
-  // results whose full title contains all the query words.
+  // query -> [{title, archiveId, archiveIdx, cluster, blob}]. matches the first word
+  // as a sorted prefix, then for multi-word queries keeps titles containing all words
   NomadArchiveIndex.prototype.search = function (query, limit) {
     limit = limit || 12;
     var self = this;
@@ -975,26 +953,21 @@
     if (q.length < 2) return Promise.resolve([]);
     var qWords = q.split(/[^a-z0-9]+/).filter(function (w) { return w.length >= 2; });
     if (!qWords.length) return Promise.resolve([]);
-    // Single word: match that word's entries. Multi-word: match the full
-    // normalized query as a title prefix (the indexer emits a full-title key),
-    // so "world war" hits "world war ii" - not any title containing "war".
+    // single word matches that word; multi-word matches the full query as a title
+    // prefix, so "world war" hits "world war ii" not any title with "war"
     var multi = qWords.length > 1;
     var normQuery = qWords.join(' ');
     var primary = multi ? normQuery : qWords[0];
 
-    // Mine the whole prefix range (across up to MAX_WINDOWS small reads) into a
-    // candidate pool, then rank: exact title, then title-starts-with-query, then
-    // shortest. Each fetched chunk is scanned FULLY before deciding to read more,
-    // so an exact match that sorts after many weaker ones (e.g. "Einstein" after
-    // "Albert Einstein"/"Bose-Einstein…") isn't cut off mid-chunk. CAP bounds a
-    // pathologically common prefix.
+    // pull the prefix range into a candidate pool then rank (exact, starts-with, shortest).
+    // each chunk is scanned fully before reading more so a late exact match isnt cut off.
+    // CAP bounds a very common prefix
     var MAX_WINDOWS = 4;
     var CAP = 3000;
 
     return this.load().then(function () {
-      // Everything keyed by a string starting with the query's first char lives
-      // in exactly one shard (single word or full-title key alike), so a search
-      // touches ONE shard - load its skip table, scan a couple of its windows.
+      // anything starting with the query's first char lives in one shard, so a
+      // search only touches that shard
       return self._getShard(primary.charAt(0));
     }).then(function (shard) {
       if (!shard || !shard.keys.length) return [];
@@ -1021,10 +994,8 @@
             if (!word) continue;
             if (word < primary) continue;                 // not there yet
             if (word.indexOf(primary) !== 0) { passedPrefix = true; break; } // past the prefix
-            // Collect ALL matches (no dedup yet). Many titles - redirects like
-            // "Einstein"/"A. Einstein" - point at the same article (cluster,blob);
-            // we dedup AFTER ranking so the best-matching title for the query wins,
-            // not whichever redirect happened to sort first.
+            // keep all matches, dedup AFTER ranking - redirects point at the same
+            // article and we want the best title to win, not whichever sorts first
             cands.push({ title: f[1], archiveIdx: +f[2], cluster: +f[3], blob: +f[4] });
             if (cands.length >= CAP) return;
           }
@@ -1088,13 +1059,10 @@
 
   function normKey(s) { return (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); }
 
-  // List every article whose title is alphabetically within [from, to]
-  // (inclusive), optionally restricted to one archive. This backs the ZIM
-  // "index" pages (e.g. Wikipedia 0.8's "A - Aeolic Greek" links, which mean
-  // "all articles in this alphabetical band"). Uses the canonical title entries
-  // in words.dat (a row whose word key equals its normalized title), so it
-  // returns real titles in range - not every title that merely contains a word
-  // in range. opts: {archiveIdx, limit}.
+  // list every article whose title is in [from, to], optionally one archive. backs the
+  // ZIM "index" pages (Wikipedia's "A - Aeolic Greek" alphabetical bands). uses canonical
+  // title rows (word key == normalized title) so it returns real titles, not word matches.
+  // opts: {archiveIdx, limit}
   NomadArchiveIndex.prototype.listRange = function (from, to, opts) {
     opts = opts || {};
     var limit = opts.limit || 200;
@@ -1138,10 +1106,8 @@
     }
 
     return this.load().then(function () {
-      // The band [lo, hi] may cross first-char boundaries ("A – Aeolic"), so walk
-      // every shard from lo's first char to hi's, in sorted order. (Legacy single
-      // index: _getShard returns one virtual shard covering all chars, so the loop
-      // runs once and behaves exactly as before.)
+      // the band can cross first-char boundaries, so walk every shard from lo's char
+      // to hi's (legacy index has one virtual shard so the loop just runs once)
       var loc = lo.charAt(0), hic = (hi ? hi.charAt(0) : loc);
       var chars;
       if (!self.sharded) { chars = [loc]; }
@@ -1166,10 +1132,8 @@
     });
   };
 
-  // Read an archive's browse list (title \t cluster \t blob, sorted by title),
-  // written by the indexer for browsable-sized archives (manifest hasList).
-  // Returns [{title, archiveIdx, archiveId, cluster, blob}]. Backs the reader's
-  // own book/talk list, replacing the ZIM's JS-driven browse pages.
+  // read an archive's browse list (title \t cluster \t blob), written by the indexer
+  // for browsable-sized archives. backs the reader's own book/talk list
   NomadArchiveIndex.prototype.listArchive = function (archiveIdx) {
     var self = this;
     return this.load().then(function () {
@@ -1182,7 +1146,9 @@
           if (!lines[i]) continue;
           var f = lines[i].split('\t');
           if (f.length < 3) continue;
-          out.push({ title: f[0], archiveIdx: +archiveIdx, archiveId: arc.id, cluster: +f[1], blob: +f[2] });
+          var row = { title: f[0], archiveIdx: +archiveIdx, archiveId: arc.id, cluster: +f[1], blob: +f[2] };
+          if (f[3]) row.url = f[3];   // "ns/url", written by newer indexers
+          out.push(row);
         }
         return out;
       });
@@ -1206,23 +1172,22 @@
     });
   };
 
-  // Open a preindexed article: reads only its cluster from the ZIM.
-  // hit = {archiveIdx, cluster, blob}. decompressors as for ZimArchive.
-  // Returns { data, mimeType }. Caches one ZimArchive per archive on `this`.
+  // open a preindexed article: reads only its cluster. hit = {archiveIdx, cluster, blob}.
+  // returns { data, mimeType }, caches one ZimArchive per archive
   NomadArchiveIndex.prototype.openArticle = function (hit, decompressors) {
     return this._zim(hit.archiveIdx, decompressors).then(function (zim) {
-      return zim.getContentAt(hit.cluster, hit.blob, 'text/html');
+      // no hardcoded text/html: document hits (a library's PDFs) must keep an
+      // empty mime so the reader can detect the real type and pick a viewer
+      return zim.getContentAt(hit.cluster, hit.blob, hit.mimeType || '');
     });
   };
 
-  // Resolve a resource URL (relative to a base article path) inside an archive
-  // and return its bytes. This is the on-device path for playing a ZIM video or
-  // reading a ZIM epub: ONE findByUrl binary search (~dozens of small reads) +
-  // the resource's cluster read. Bounded - only used on a deliberate click.
-  // baseUrl = the article's own url (e.g. 'the-luminous-mystery-of-fireflies');
-  // resourceUrl = the relative ref from its HTML (e.g. 'videos/128250/video.webm').
+  // resolve a resource URL inside an archive and return its bytes - the path for
+  // playing a ZIM video or reading a ZIM epub (one findByUrl + a cluster read).
+  // only runs on a deliberate click. baseUrl = article's url, resourceUrl = the ref in its HTML
   NomadArchiveIndex.prototype.openResource = function (archiveIdx, baseUrl, resourceUrl, decompressors) {
     var self = this;
+    baseUrl = stripNsPrefix(baseUrl);
     return this._zim(archiveIdx, decompressors).then(function (zim) {
       // Candidate paths, most-specific first: resolved-against-article, raw ref,
       // decoded, and basename - covers root-relative and subdir article layouts.
@@ -1253,6 +1218,90 @@
     });
   };
 
+  // Resolve a link inside an article to its ZIM entry. Same candidate logic
+  // as openResource, but returns the entry's location and final URL so the
+  // reader can navigate to it (and push history) instead of falling back to
+  // a title search. Follows redirects. Returns null when nothing matches.
+  NomadArchiveIndex.prototype.resolveLink = function (archiveIdx, baseUrl, href, decompressors) {
+    var self = this;
+    baseUrl = stripNsPrefix(baseUrl);
+    // links repeat constantly (nav bars, category footers) and on the device
+    // every candidate probe is a run of serialized range reads, so resolved
+    // links - including misses - are remembered for the session
+    var ck = archiveIdx + '|' + baseUrl + '|' + (href || '');
+    self._linkCache = self._linkCache || {};
+    if (ck in self._linkCache) return Promise.resolve(self._linkCache[ck]);
+    return this._zim(archiveIdx, decompressors).then(function (zim) {
+      var raw = (href || '').split('#')[0].split('?')[0];
+      if (!raw) return null;
+      // an explicit "ns/path" ref (from a browse list or manifest) skips the guessing
+      var explicit = raw.match(/^([ACIJVWXM-])\/(.+)$/);
+      var cands = [resolveZimPath(baseUrl, href), raw.replace(/^\.?\//, '')];
+      try { cands.push(decodeURIComponent(cands[0])); } catch (e) {}
+      // zimit stores directory pages with a trailing slash; links to them
+      // often come without one (and vice versa). Wiki archives have no
+      // slash-suffixed pages at all, skip those probes there
+      var hostStyle = (baseUrl.split('/')[0].indexOf('.') > 0) || (cands[0] && cands[0].split('/')[0].indexOf('.') > 0);
+      if (hostStyle) {
+        cands.slice(0).forEach(function (c) {
+          if (!c) return;
+          if (c.charAt(c.length - 1) === '/') cands.push(c.slice(0, -1));
+          else cands.push(c + '/');
+        });
+      }
+      var uniq = []; cands.forEach(function (c) { if (c && uniq.indexOf(c) < 0) uniq.push(c); });
+      var nss = ['C', 'A', 'I', '-'];
+      // namespace-first: modern ZIMs keep everything under C, so a hit lands
+      // before any legacy namespace is probed and a miss fails fast per tier
+      var tryOne = function (ni, ci) {
+        if (explicit) {
+          explicit = null;             // one shot, then the normal ladder
+          return zim.findByUrl(raw.charAt(0), raw.substring(2)).then(function (e) {
+            return e || tryOne(0, 0);
+          });
+        }
+        if (ni >= nss.length) return Promise.resolve(null);
+        if (ci >= uniq.length) return tryOne(ni + 1, 0);
+        return zim.findByUrl(nss[ni], uniq[ci]).then(function (e) {
+          if (e) return e;
+          return tryOne(ni, ci + 1);
+        });
+      };
+      return tryOne(0, 0).then(function (e) {
+        if (!e) return null;
+        return zim.resolveRedirect(e).then(function (t) {
+          if (!t || t.isRedirect) return null;
+          return {
+            archiveIdx: +archiveIdx,
+            url: t.namespace + '/' + t.url,
+            title: t.title || e.title || t.url,
+            cluster: t.clusterNumber,
+            blob: t.blobNumber,
+            mimeType: t.mimeType || ''
+          };
+        });
+      });
+    }).then(function (res) {
+      var keys = Object.keys(self._linkCache);
+      if (keys.length > 500) self._linkCache = {};
+      self._linkCache[ck] = res;
+      return res;
+    });
+  };
+
+  // Recover a hit's own entry URL from the archive's title listing. Search
+  // hits carry only (title, cluster, blob); the URL is what relative links
+  // and resources resolve against. Null when the title can't be found.
+  NomadArchiveIndex.prototype.urlForHit = function (hit, decompressors) {
+    if (hit.url) return Promise.resolve(hit.url);
+    if (!hit || !hit.title) return Promise.resolve(null);
+    return this._zim(hit.archiveIdx, decompressors).then(function (zim) {
+      return zim.findByTitle(hit.title, hit.cluster, hit.blob).then(function (e) {
+        return e ? (e.namespace + '/' + e.url) : null;
+      });
+    }).catch(function () { return null; });
+  };
+
   function mimeFromUrl(u) {
     u = (u || '').toLowerCase();
     if (/\.webm$/.test(u)) return 'video/webm';
@@ -1271,9 +1320,23 @@
 
   // Resolve a relative resource URL against an article's own path, ZIM-style
   // (paths are relative to the article's directory; handle ./ and ../).
+  // hit.url and manifest mainUrl are stored namespace-prefixed ("C/host/page");
+  // the ZIM url space is namespace-less, so resolution strips it first
+  function stripNsPrefix(u) {
+    u = u || '';
+    return /^[A-Z-]\//.test(u) ? u.substring(2) : u;
+  }
+
   function resolveZimPath(baseUrl, rel) {
     rel = (rel || '').split('#')[0].split('?')[0];
-    if (rel.charAt(0) === '/') return rel.replace(/^\/+/, '');
+    if (rel.charAt(0) === '/') {
+      rel = rel.replace(/^\/+/, '');
+      // zimit archives root everything under the site's host name; a
+      // root-relative link inside such a page means "under that host"
+      var host = (baseUrl || '').split('/')[0];
+      if (host && host.indexOf('.') > 0) return host + '/' + rel;
+      return rel;
+    }
     var baseDir = (baseUrl || '');
     var slash = baseDir.lastIndexOf('/');
     baseDir = slash >= 0 ? baseDir.substring(0, slash + 1) : '';
@@ -1285,7 +1348,11 @@
       if (p === '..') { stack.pop(); continue; }
       stack.push(p);
     }
-    return stack.join('/');
+    // zimit directory pages are stored WITH their trailing slash
+    // ("host/kits/"), so a link that ends in one must keep it
+    var joined = stack.join('/');
+    if (rel.charAt(rel.length - 1) === '/' && joined) joined += '/';
+    return joined;
   }
 
   return {

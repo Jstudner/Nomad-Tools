@@ -2,15 +2,15 @@
 Cross-platform card discovery for nomad's card tools.
 
 Finds plugged-in removable cards and flags which look like a nomad card, on:
-  • Linux  — lsblk (removable/USB disks only; never the system disk), and
+  • Linux:   lsblk (removable/USB disks only; never the system disk), and
              udisksctl to mount a card that isn't mounted yet;
-  • Windows — removable drive letters (plus any fixed drive that looks like a
+  • Windows: removable drive letters (plus any fixed drive that looks like a
              nomad card), already mounted by the OS;
-  • macOS  — volumes under /Volumes.
+  • macOS:   volumes under /Volumes.
 
 list_cards() returns a list of dicts shaped for the picker:
     {label, model, mountpoint|None, partition|None, is_nomad, free, size}
-A mountpoint of None means "not mounted yet" (Linux) — mount_partition() mounts it.
+A mountpoint of None means "not mounted yet" (Linux); mount_partition() mounts it.
 """
 from __future__ import annotations
 

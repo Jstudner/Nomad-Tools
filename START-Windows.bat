@@ -1,5 +1,5 @@
 @echo off
-REM ── nomad card tools — Windows launcher ──────────────────────────────────────
+REM nomad card tools - Windows launcher
 REM Double-click this file to open the tools menu.
 setlocal
 cd /d "%~dp0"

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-import_zim — put ZIM archives onto a nomad card and build the on-card index.
+import_zim: put ZIM archives onto a nomad card and build the on-card index.
 
 Point it at a .zim file or a folder of them, pick the destination card, and it
 copies each archive into <card>/Archive (auto-splitting anything over FAT32's
@@ -44,7 +44,7 @@ def run(dest: str | None = None, source: str | None = None, assume_yes: bool = F
     nc.banner("Import ZIM archives")
 
     if not shutil.which("node") and not shutil.which("nodejs"):
-        print(nc.c("1;31", "warning:") + " node isn't on PATH — the index step will fail.")
+        print(nc.c("1;31", "warning:") + " node isn't on PATH, so the index step will fail.")
         print("         install Node.js (or `nvm use`) before continuing.\n")
 
     # 1. source ---------------------------------------------------------------
@@ -66,10 +66,13 @@ def run(dest: str | None = None, source: str | None = None, assume_yes: bool = F
     archive_dir = Path(dest) / "Archive"
     print(f"\nDestination: {nc.c('1', dest)}")
     print(f"  archives land in {archive_dir}")
+    # archives already in this card's /Archive are indexed where they are, not copied
+    to_copy = sum(z.stat().st_size for z in zims
+                  if z.resolve().parent != archive_dir.resolve())
     try:
         free = shutil.disk_usage(dest).free
-        print(f"  free space: {nc.human(free)}   (need ~{nc.human(total)})")
-        if free < total:
+        print(f"  free space: {nc.human(free)}   (need ~{nc.human(to_copy)})")
+        if free < to_copy:
             print(nc.c("1;31", "  warning: not enough free space for every archive."))
     except OSError:
         pass
@@ -90,7 +93,7 @@ def run(dest: str | None = None, source: str | None = None, assume_yes: bool = F
             print(nc.c("1;32", f"  ✓ {z.name} imported"))
         except KeyboardInterrupt:
             progress.done()
-            print(nc.c("1;31", "\n  interrupted — the card may hold a partial copy."))
+            print(nc.c("1;31", "\n  interrupted. The card may hold a partial copy."))
             return 130
         except Exception as exc:
             progress.done()
@@ -104,6 +107,7 @@ def run(dest: str | None = None, source: str | None = None, assume_yes: bool = F
         print(nc.c("31", f"  ✗ {name}: {err}"))
     if not failures:
         print(nc.c("2", "  Eject the card safely, then pop it back into nomad."))
+        nc.hidden_page_note(dest, "archive", "Archive")
     return 1 if failures else 0
 
 
