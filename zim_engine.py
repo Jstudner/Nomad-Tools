@@ -1,13 +1,12 @@
 """
-Self-contained ZIM import: validate → copy (splitting >4 GB) → build the on-card
-search index. Ported from nomad Manager's sd/archives.py so this tools folder
-needs nothing but Python and Node, no nomad Manager install required.
+Self-contained ZIM import: validate, copy (splitting >4 GB), then build the
+on-card search index. Ported from Nomad Manager's sd/archives.py so this tools
+folder needs only Python and Node, not a Nomad Manager install.
 
-Cross-platform:
-  • copy/split is pure Python (works everywhere);
-  • the index is built by the bundled zim/zim_indexer.js (needs Node on PATH),
-    which sorts with a built-in cross-platform sort on Windows;
-  • the Unix-only `sync` flush is guarded so it's a no-op off Linux/mac.
+  copy/split is pure Python, so it works everywhere
+  the index is built by the bundled zim/zim_indexer.js (needs Node on PATH),
+  which uses its own sort on Windows
+  the Unix-only `sync` flush is skipped off Linux and macOS
 
 Public surface matches the old sd/archives.py, so callers are unchanged:
     import_zim(src_path, mountpoint, progress)
@@ -61,8 +60,8 @@ def _node() -> str:
     exe = shutil.which("node") or shutil.which("nodejs")
     if not exe:
         raise RuntimeError(
-            "Node.js not found on PATH. The ZIM indexer runs on Node "
-            "(it reuses the device's nomad-zim.js reader). Install Node and retry."
+            "Node.js isn't installed (or isn't on PATH). It's needed to build the archive "
+            "search. Install Node.js and try again."
         )
     return exe
 
@@ -74,7 +73,7 @@ def _validate_zim(src: Path) -> int:
     with src.open("rb") as f:
         head = f.read(4)
     if head != ZIM_MAGIC:
-        raise RuntimeError(f"{src.name} is not a ZIM file (bad magic {head!r})")
+        raise RuntimeError(f"{src.name} isn't a ZIM file")
     return src.stat().st_size
 
 
@@ -133,10 +132,12 @@ def _remove_existing(archive_dir: Path, name: str) -> None:
             p.unlink()  # split part <name>aa
 
 
-def import_zim(src_path: str, mountpoint: str | Path, progress: Log = print) -> None:
+def import_zim(src_path: str, mountpoint: str | Path, progress: Log = print, prepare: bool = False,
+               index: bool = True) -> None:
     """Import one ZIM onto the card: validate -> copy (splitting if >4GB) -> index.
 
-    `progress` is the shared Progress object (callable + .plan/.step/.pct)."""
+    prepare: write it with small clusters as it goes onto the card (zim_prepare), instead
+    of a plain copy. `progress` is the shared Progress object (callable + .plan/.step/.pct)."""
     src = Path(src_path).expanduser()
     archive_dir = Path(mountpoint) / "Archive"
     archive_dir.mkdir(parents=True, exist_ok=True)
@@ -144,16 +145,16 @@ def import_zim(src_path: str, mountpoint: str | Path, progress: Log = print) -> 
     plan = getattr(progress, "plan", None)
     step = getattr(progress, "step", None)
     if plan:
-        plan(["Validate", "Copy to card", "Build search index"])
+        plan(["Check the file", "Speed up and copy to card" if prepare else "Copy to card", "Build search index"])
 
-    # ---- 1. validate ----
+    # 1. validate
     if step:
-        step("Validate")
+        step("Check the file")
     size = _validate_zim(src)
     name = src.name  # e.g. wikipedia_en_all.zim
     if not name.lower().endswith(".zim"):
-        raise RuntimeError("Source must be a .zim file")
-    progress(f"{name}: valid ZIM, {_human(size)}")
+        raise RuntimeError("That needs to be a .zim file")
+    progress(f"{name}: looks like a good ZIM, {_human(size)}")
 
     # Already in this card's /Archive. Copying it over itself would delete it
     # first (_remove_existing) and then have nothing to copy, so only index it.
@@ -163,53 +164,77 @@ def import_zim(src_path: str, mountpoint: str | Path, progress: Log = print) -> 
     try:
         free = shutil.disk_usage(str(archive_dir)).free
         if not in_place and free < size + (64 * 1024 * 1024):
-            raise RuntimeError(f"Not enough space on card: need {_human(size)}, have {_human(free)} free")
+            raise RuntimeError(f"Not enough space on the card: it needs {_human(size)} and has {_human(free)} free")
     except OSError:
         pass
 
-    # ---- 2. copy / split ----
+    # 2. copy / split
     if step:
-        step("Copy to card")
-    if in_place:
-        progress(f"{name} is already on the card, indexing it where it is")
+        step("Speed up and copy to card" if prepare else "Copy to card")
+    if prepare and not in_place:
+        import zim_prepare   # imports this module too
+        if zim_prepare.status([src]) == "prepared":
+            prepare = False
+            progress(f"{name} is already sped up, copying it as it is")
+    if prepare and not in_place:
+        import zim_prepare
+        target, growth = zim_prepare.choose_size([src])
+        if growth > zim_prepare.SKIP:
+            prepare = False
+            progress(f"{name} would grow about {growth * 100:+.0f}% if sped up (its pages repeat each other a lot), so it's copied as it is")
+    if prepare and not in_place:
+        progress(f"Speeding it up as it copies (about {growth * 100:+.0f}% in size)")
+        tmp = archive_dir / (".preparing-" + name)
+        split = size * 1.15 > FAT32_MAX - (16 * 1024 * 1024) and zim_prepare.fat32(archive_dir)
+        res = zim_prepare.rewrite([src], tmp, split, progress, target=target)
+        progress("  checking it against the original")
+        zim_prepare.verify([src], res["paths"], progress=progress)
+        _remove_existing(archive_dir, name)
+        for p in res["paths"]:
+            os.replace(p, archive_dir / (name + p.name[len(tmp.name):]))
+        progress(f"  wrote {name} ({_human(res['size'])}, was {_human(size)})")
+    elif in_place:
+        progress(f"{name} is already on the card, so it just gets added to the search")
     elif size <= FAT32_MAX - (16 * 1024 * 1024):
         dst = archive_dir / name
-        progress(f"Copying whole file (under FAT32 4 GB limit) -> {dst.name}")
+        progress(f"Copying {dst.name} as one file (it's under 4 GB)")
         _remove_existing(archive_dir, name)
         _copy_with_progress(src, dst, size, 0, size, progress)
         progress(f"  copied {name} ({_human(size)})")
     else:
         nparts = (size + SPLIT_PART_SIZE - 1) // SPLIT_PART_SIZE
-        progress(f"Larger than FAT32 4 GB limit - splitting into {nparts} parts of ~{_human(SPLIT_PART_SIZE)}")
+        progress(f"It's over 4 GB, so it's split into {nparts} parts of about {_human(SPLIT_PART_SIZE)} (FAT32 cards can't hold bigger files)")
         _remove_existing(archive_dir, name)
         parts = _write_split(src, archive_dir, name, size, progress)
         progress(f"  wrote {len(parts)} parts: {', '.join(parts)}")
 
     _sync()
 
-    # ---- 3. index ----
+    # 3. index
+    if not index:
+        return
     if step:
         step("Build search index")
     index_archives(mountpoint, progress)
-    progress("Import complete.")
+    progress("Archive added.")
 
 
 def index_archives(mountpoint: str | Path, log: Log = print) -> None:
     root = str(mountpoint)
     archive_dir = Path(root) / "Archive"
     if not archive_dir.is_dir():
-        log("No /Archive folder on this card - nothing to index.")
+        log("No Archive folder on this card, so there's no search to build.")
         return
 
     zims = [p for p in archive_dir.iterdir()
             if p.is_file() and not p.name.startswith(".") and ".zim" in p.name.lower()]
     if not zims:
-        log("No .zim files under /Archive - nothing to index.")
+        log("No .zim files in the Archive folder, so there's no search to build.")
         return
 
     node = _node()
     if not INDEXER.exists():
-        raise RuntimeError(f"Bundled indexer missing: {INDEXER}")
+        raise RuntimeError(f"The search builder is missing from the tools folder ({INDEXER}). Try downloading the tools again.")
 
     cmd = [node, str(INDEXER), root]
     log("$ " + " ".join(cmd))
@@ -235,6 +260,10 @@ def index_archives(mountpoint: str | Path, log: Log = print) -> None:
         log(line)
     rc = proc.wait()
     if rc != 0:
-        raise RuntimeError(f"ZIM indexer failed (exit {rc})")
+        raise RuntimeError(f"Building the archive search failed (exit {rc})")
+    # a fresh index: an unfinished in-place update (zim_prepare) no longer applies
+    pending = archive_dir / ".nomad-zim" / "remap-pending.json"
+    if pending.exists():
+        pending.unlink()
     _sync()
-    log("Archive index complete (/Archive/.nomad-zim written).")
+    log("Archive search is built.")

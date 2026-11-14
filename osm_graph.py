@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 osm_graph: turn a bounding box of OpenStreetMap data into a compact routing
-graph and a place-search index that nomad's offline Maps app reads directly.
+graph and a place-search index that Nomad's offline Maps app reads directly.
 
 Two products come out of one download:
 
@@ -121,7 +121,7 @@ def fetch_overpass(bbox, log=print) -> dict | None:
                 log(f"  Overpass returned {len(j['elements']):,} elements")
                 return j
         except (urllib.error.URLError, OSError, ValueError, TimeoutError) as e:
-            log(f"    unreachable ({type(e).__name__}); trying next")
+            log(f"    couldn't reach it ({type(e).__name__}), trying the next one")
     return None
 
 
@@ -179,8 +179,8 @@ def _split_bbox(b):
 def fetch_osm(bbox, log=print) -> dict:
     j = fetch_overpass(bbox, log)
     if j is None:
-        log("  Overpass unavailable, falling back to the OpenStreetMap API "
-            "(slower, splits the area into tiles)")
+        log("  Overpass isn't available, using the OpenStreetMap API instead "
+            "(slower, it splits the area into tiles)")
         j = fetch_osm_api(bbox, log)
     return j
 
@@ -423,9 +423,9 @@ def build_region_data(bbox, out_dir: Path, log=print) -> dict:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Build a nomad routing graph from OSM.")
+    ap = argparse.ArgumentParser(description="Build a Nomad routing graph for a small area from OpenStreetMap.")
     ap.add_argument("--bbox", required=True, help="west,south,east,north")
-    ap.add_argument("-o", "--output", required=True, help="region dir to write into")
+    ap.add_argument("-o", "--output", required=True, help="region folder to write into")
     args = ap.parse_args()
     west, south, east, north = (float(p) for p in args.bbox.split(","))
     stats = build_region_data((west, south, east, north), Path(args.output))

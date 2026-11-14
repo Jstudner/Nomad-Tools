@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """
-build_index: regenerate the browse index nomad reads from a card.
+build_index: regenerate the browse index Nomad reads from a card.
 
-nomad can't scan a big SD card fast on-device, so it reads pre-built NDJSON
+Nomad can't scan a big SD card fast on the device, so it reads pre-built NDJSON
 index files from /.system-index instead. Run this whenever you add or remove
-media and the index is refreshed to match. Nothing is deleted from your card.
+media. Nothing is deleted from your card.
 
     ./build_index.py                 # pick a card, then index it
     ./build_index.py /media/me/NOMAD
 
-The index format matches the firmware's own indexer exactly; the scan/hash
-logic below is intentionally kept byte-for-byte identical to the device's, so
-do not "clean up" those functions.
+The scan and hash functions below match the firmware's own indexer byte for
+byte. Don't "clean them up".
 """
 from __future__ import annotations
 
@@ -153,7 +152,7 @@ def count_and_hash_entries(dir_path: Path, root_path: Path, max_depth: int) -> T
                     sig = fnv1a64(sig_data) ^ sig
                     count += 1
         except Exception as e:
-            print(f"\n  Warning: Error scanning {path}: {e}")
+            print(f"\n  Couldn't read {path}: {e}")
 
     scan(dir_path)
     return count, sig
@@ -164,12 +163,10 @@ def write_index_for_dir(dir_path: Path, output_filename: str, root_path: Path) -
     if not dir_path.exists() or not dir_path.is_dir():
         return False, 0
     try:
-        # relative_to(self) is Path('.'), which would make the card root normalize
-        # to "/." instead of "/". That misses the isRoot test below, so the root
-        # index got built at depth 10 (the whole card) with a "/." header, and its
-        # sig could never match the firmware's depth-0 prepass. The device then
-        # rebuilt root.index.ndjson on every boot, which is the scan this tool
-        # exists to avoid. Keep the "." case mapped to "/".
+        # relative_to(self) is Path('.'), which would normalize the card root to
+        # "/." and miss the isRoot test. The root index then got depth 10 and a
+        # sig that never matched the firmware's depth-0 prepass, so the device
+        # rebuilt root.index.ndjson on every boot. Keep "." mapped to "/".
         rel = str(dir_path.relative_to(root_path)).replace('\\', '/')
         norm_path = normalize_path("/" if rel == "." else "/" + rel)
     except ValueError:
@@ -214,7 +211,7 @@ def write_index_for_dir(dir_path: Path, output_filename: str, root_path: Path) -
                             entry = f'{{"t":"f","n":"{json_escape(name)}","p":"{json_escape(full_path)}","sz":{size},"mt":{mtime}}}\n'
                             f.write(entry)
                 except Exception as e:
-                    print(f"\n  Warning: Error writing entries for {path}: {e}")
+                    print(f"\n  Couldn't list everything in {path}: {e}")
 
             write_entries(dir_path)
 
@@ -223,7 +220,7 @@ def write_index_for_dir(dir_path: Path, output_filename: str, root_path: Path) -
         tmp_path.rename(final_path)
         return True, count
     except Exception as e:
-        print(f"\n  Error writing index for {dir_path}: {e}")
+        print(f"\n  Couldn't write the index for {dir_path}: {e}")
         if tmp_path.exists():
             tmp_path.unlink()
         return False, 0
@@ -234,8 +231,6 @@ def build_bucket_index(bucket_path: Path, root_path: Path, bucket_name: str) -> 
     bucket = "root" if bucket_name == "/" else bucket_name.lstrip('/').rstrip('/')
     return write_index_for_dir(bucket_path, f"{bucket}.index.ndjson", root_path)
 
-
-# ── presentation (styled to match the other nomad tools) ───────────────────────
 
 _NESTED = {   # bucket -> (label, filename prefix) for its per-subfolder indexes
     "/Shows": ("shows", "Shows"),
@@ -268,14 +263,14 @@ def _index_nested(bucket: str, bucket_path: Path, root_path: Path, progress: nc.
 
 def run(dest: str | None = None) -> int:
     """Interactive index rebuild. `dest` skips the card picker."""
-    nc.banner("Rebuild media index")
+    nc.banner("Rebuild the media index")
 
-    dest = nc.choose_card(dest, prompt="Which card should be indexed?")
+    dest = nc.choose_card(dest, prompt="Which card should I rebuild the index for?")
     if not dest:
-        print("cancelled.")
+        print("Cancelled.")
         return 1
     root_path = Path(dest)
-    print(f"  card: {root_path}   index: /{INDEX_DIR}")
+    print(f"  Card: {root_path}")
 
     progress = nc.Progress()
     start = time.time()
@@ -289,9 +284,9 @@ def run(dest: str | None = None) -> int:
         ok, count = build_bucket_index(bucket_path, root_path, bucket)
         if ok:
             total_items += count
-            print(f"  indexed {count} item(s)")
+            print(f"  {count} item(s)")
         else:
-            print(nc.c("31", "  failed to index"))
+            print(nc.c("31", "  couldn't index this folder"))
         if bucket in _NESTED:
             total_items += _index_nested(bucket, bucket_path, root_path, progress)
 
@@ -300,9 +295,9 @@ def run(dest: str | None = None) -> int:
     elapsed = time.time() - start
     buckets_done = len([b for b in BUCKETS
                         if (root_path if b == "/" else root_path / b.lstrip('/')).exists()])
-    print(nc.c("1", f"\nDone: {total_items:,} item(s) across {buckets_done} bucket(s) "
-                    f"in {elapsed:.1f}s"))
-    print(nc.c("2", "  Eject safely. Nomad will pick up the new index on next boot."))
+    print(nc.c("1", f"\nDone: {total_items:,} item(s) in {buckets_done} folder(s), "
+                    f"took {elapsed:.1f}s"))
+    print(nc.c("2", "  Eject the card safely. Nomad picks up the changes next time it starts."))
     return 0
 
 
@@ -317,15 +312,15 @@ def _remove_legacy_media_json(root_path: Path) -> None:
         return
     try:
         legacy.unlink()
-        print(nc.c("2", "\n  removed an old media.json (nomad rescans the whole card when it finds one)"))
+        print(nc.c("2", "\n  Removed an old media.json (it made Nomad scan the whole card at every start)"))
     except OSError as e:
-        print(nc.c("31", f"\n  could not remove the old media.json: {e}"))
+        print(nc.c("31", f"\n  Couldn't remove the old media.json: {e}"))
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Rebuild the /.system-index browse index on a nomad card.")
-    ap.add_argument("card", nargs="?", help="card mountpoint (skips the picker)")
+        description="Rebuild the media index on a Nomad card. This is the list Nomad uses to show your stuff. Nothing on the card gets deleted.")
+    ap.add_argument("card", nargs="?", help="where the card is mounted (skips the card picker)")
     args = ap.parse_args()
     return run(dest=args.card)
 
@@ -334,5 +329,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except KeyboardInterrupt:
-        print("\n\nInterrupted.")
+        print("\n\nStopped.")
         sys.exit(130)

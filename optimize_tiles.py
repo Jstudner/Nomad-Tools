@@ -77,12 +77,12 @@ def optimize_region(region_dir: Path, out_fmt: str = "webp", quality: int = 80,
     """Re-encode one region's tiles and rewrite its manifest. Returns stats."""
     tiles_dir = region_dir / "tiles"
     if not tiles_dir.is_dir():
-        log(nc.c("2", f"  {region_dir.name}: no tiles/ folder, skipping"))
+        log(nc.c("2", f"  {region_dir.name}: no tiles folder, skipping"))
         return {}
     jobs = [p for p in tiles_dir.glob("*/*/*")
             if p.is_file() and p.suffix.lower() in TILE_EXTS]
     if not jobs:
-        log(nc.c("2", f"  {region_dir.name}: nothing to convert (already {out_fmt}?)"))
+        log(nc.c("2", f"  {region_dir.name}: nothing to convert (it might already be {out_fmt})"))
         # still make sure the manifest matches what's on disk
         _rewrite_manifest(region_dir, out_fmt)
         return {}
@@ -137,18 +137,18 @@ def _rewrite_manifest(region_dir: Path, out_fmt: str) -> None:
 
 def run(dest: str | None = None, region: str | None = None,
         out_fmt: str = "webp", quality: int = 80, assume_yes: bool = False) -> int:
-    nc.banner("Optimize map tiles")
+    nc.banner("Shrink map tiles")
     if Image is None:
-        print(nc.c("1;31", "error: Pillow is required (pip install Pillow)."))
+        print(nc.c("1;31", "error: this needs Pillow (pip install Pillow)."))
         return 1
 
-    dest = nc.choose_card(dest, prompt="Which card has the maps to optimize?")
+    dest = nc.choose_card(dest, prompt="Which card has the maps to shrink?")
     if not dest:
-        print("cancelled.")
+        print("Cancelled.")
         return 1
     maps_dir = Path(dest) / "Maps"
     if not maps_dir.is_dir():
-        print(nc.c("1;31", f"no /Maps folder on {dest}."))
+        print(nc.c("1;31", f"No Maps folder on {dest}."))
         return 1
 
     regions = ([maps_dir / region] if region
@@ -156,19 +156,19 @@ def run(dest: str | None = None, region: str | None = None,
                      if p.is_dir() and (p / "manifest.json").is_file()])
     regions = [r for r in regions if r.is_dir()]
     if not regions:
-        print(nc.c("1;31", "no regions found under /Maps."))
+        print(nc.c("1;31", "No map areas in the Maps folder."))
         return 1
 
     # Re-encoding replaces each tile and deletes the original. That is lossy on
     # top of lossy, and putting a big region back means downloading it again, so
     # ask first. optimize_images does the same for cover art.
-    print(f"\nOptimizing {len(regions)} region(s) to {out_fmt} at quality {quality}:")
+    print(f"\nShrinking {len(regions)} map area(s) to {out_fmt} at quality {quality}:")
     for r in regions:
         print(f"   - {r.name}")
-    print(nc.c("1;33", "  The existing tiles are replaced and the originals deleted."))
-    print(nc.c("2", "  Re-downloading a large region can take hours."))
-    if not assume_yes and input("\nProceed? [y/N] ").strip().lower() not in ("y", "yes"):
-        print("aborted.")
+    print(nc.c("1;33", "  This replaces the tiles and deletes the originals. You can't undo it."))
+    print(nc.c("2", "  Getting a big area back means downloading it again, which can take hours."))
+    if not assume_yes and input("\nGo ahead? [y/N] ").strip().lower() not in ("y", "yes"):
+        print("Cancelled.")
         return 1
 
     total_in = total_out = 0
@@ -180,18 +180,18 @@ def run(dest: str | None = None, region: str | None = None,
         saved = total_in - total_out
         print(nc.c("1", f"\nAll done: tiles {nc.human(total_in)} -> {nc.human(total_out)}, "
                  f"saved {nc.human(saved)} ({100.0*saved/total_in:.0f}%)."))
-    print(nc.c("2", "  Eject safely. The Maps app reads the new format automatically."))
+    print(nc.c("2", "  Eject the card safely. The Maps page picks up the new tiles by itself."))
     return 0
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Re-encode a region's map tiles to save space.")
-    ap.add_argument("-o", "--output", help="card mountpoint")
-    ap.add_argument("--region", help="just this region id (default: all under /Maps)")
+    ap = argparse.ArgumentParser(description="Shrink a map area's tiles by converting them to WebP. Replaces the originals.")
+    ap.add_argument("-o", "--output", help="where the card is mounted (skips the card picker)")
+    ap.add_argument("--region", help="just this map area's folder name (default: every area in /Maps)")
     ap.add_argument("--format", dest="out_fmt", default="webp", choices=["webp", "jpeg"],
-                    help="target tile format (default webp)")
-    ap.add_argument("--quality", type=int, default=80, help="encoder quality 1-100 (default 80)")
-    ap.add_argument("-y", "--yes", action="store_true", help="don't ask before rewriting")
+                    help="format to convert to (default webp)")
+    ap.add_argument("--quality", type=int, default=80, help="picture quality 1-100 (default 80)")
+    ap.add_argument("-y", "--yes", action="store_true", help="don't ask before replacing the tiles")
     args = ap.parse_args()
     return run(dest=args.output, region=args.region, out_fmt=args.out_fmt,
                quality=args.quality, assume_yes=args.yes)
@@ -201,8 +201,8 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except KeyboardInterrupt:
-        print("\naborted.")
+        print("\nStopped.")
         sys.exit(130)
     except EOFError:
-        print("\nno input, stopping.")
+        print("\nNo input, stopping.")
         sys.exit(1)

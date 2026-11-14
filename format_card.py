@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-format_card: erase a card and set it up as an exFAT nomad card (Linux).
+format_card: erase a card and set it up as an exFAT Nomad card (Linux).
 
 exFAT has no 4GB per-file limit and copes with the huge number of small
 files a map region holds. Clusters are 4KB so those little files don't
@@ -29,7 +29,7 @@ import nomad_common as nc
 
 LABEL = "NOMAD"
 SIZE_CAP_GB = 2048      # refuse anything bigger, it isn't a card
-BIG_CARD_BYTES = 540_000_000_000   # above this, 8K clusters (same cutoff as provision-card.sh)
+BIG_CARD_BYTES = 540_000_000_000   # above this, 8K clusters
 
 
 def cluster_for(size_bytes: int) -> str:
@@ -51,7 +51,7 @@ def _run(cmd: list[str], log) -> None:
         for line in r.stdout.rstrip().splitlines():
             log("    " + line)
     if r.returncode != 0:
-        raise FormatError(f"step failed: {' '.join(cmd)}")
+        raise FormatError(f"This step didn't work: {' '.join(cmd)}")
 
 
 def _is_removable(dev: dict) -> bool:
@@ -70,7 +70,7 @@ def _removable_disks() -> list[dict]:
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True).stdout
         tree = json.loads(out)
     except Exception as e:
-        raise FormatError(f"could not list disks (is lsblk present?): {e}")
+        raise FormatError(f"Couldn't list the disks (is lsblk installed?): {e}")
 
     # disk hosting '/', so we never offer it
     root_disk = None
@@ -104,33 +104,33 @@ def _removable_disks() -> list[dict]:
 
 
 def _pick_disk(disks: list[dict]) -> dict | None:
-    print(nc.c("1", "\nRemovable disks I can format:"))
+    print(nc.c("1", "\nCards I can format:"))
     for i, d in enumerate(disks, 1):
         where = ("  mounted at " + ", ".join(d["mounts"])) if d["mounts"] else ""
         print(f"  {i}. {nc.c('1', d['path'])}  {d['model']}  {nc.human(d['size'])}{where}")
-    print("  0. cancel")
+    print("  0. Cancel")
     while True:
         pick = input("Which disk? ").strip()
         if pick in ("0", "", "q", "cancel"):
             return None
         if pick.isdigit() and 1 <= int(pick) <= len(disks):
             return disks[int(pick) - 1]
-        print(f"  type 1-{len(disks)} or 0.")
+        print(f"  Type a number from 1 to {len(disks)}, or 0.")
 
 
 def format_card(device: str, assume_yes: bool = False, log=print) -> int:
     if sys.platform.startswith("win") or sys.platform == "darwin":
         print(nc.c("1;33",
-            "Formatting is Linux only for now. On Windows use 'Format...' in "
-            "Explorer, choose exFAT and an allocation unit size of 4096 bytes "
-            "(8192 on cards over 512 GB); on a Mac use Disk Utility, erase as "
-            "exFAT. Then run the other tools against the card."))
+            "Formatting only works on Linux for now. On Windows, right click the "
+            "card in Explorer, pick 'Format...', choose exFAT and an allocation "
+            "unit size of 4096 bytes (8192 on cards over 512 GB). On a Mac, use "
+            "Disk Utility and erase it as exFAT. Then use the other tools on the card."))
         return 1
 
     if subprocess.run(["which", "mkfs.exfat"], stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL).returncode != 0:
         print(nc.c("1;31",
-            "mkfs.exfat isn't installed. Install exfatprogs first:\n"
+            "This needs mkfs.exfat, which isn't installed. Install exfatprogs first:\n"
             "  Debian/Ubuntu/Pop: sudo apt install exfatprogs\n"
             "  Fedora:            sudo dnf install exfatprogs\n"
             "  Arch:              sudo pacman -S exfatprogs"))
@@ -141,13 +141,13 @@ def format_card(device: str, assume_yes: bool = False, log=print) -> int:
         target = next((d for d in disks if d["path"] == device), None)
         if not target:
             print(nc.c("1;31",
-                f"{device} isn't in the removable-disk list. For safety I only "
-                "format disks marked removable, like memory cards, never USB "
-                "hard drives or the system disk."))
+                f"{device} isn't on the list of cards. To be safe I only format "
+                "disks marked removable, like memory cards. I never touch USB "
+                "hard drives or the disk your computer runs from."))
             return 1
     else:
         if not disks:
-            print(nc.c("1;33", "No removable disks found. Plug a card in and try again."))
+            print(nc.c("1;33", "No cards found. Plug one in and try again."))
             return 1
         target = _pick_disk(disks)
         if not target:
@@ -157,25 +157,25 @@ def format_card(device: str, assume_yes: bool = False, log=print) -> int:
     dev = target["path"]
     gb = target["size"] / (1024 ** 3)
     if gb > SIZE_CAP_GB:
-        print(nc.c("1;31", f"{dev} is {gb:.0f} GB, too big to be a card. Refusing."))
+        print(nc.c("1;31", f"{dev} is {gb:.0f} GB, which is too big to be a card. Not touching it."))
         return 1
 
     cluster = cluster_for(target["size"])
 
-    print(nc.c("1;31", f"\n  This ERASES EVERYTHING on {dev} "
-                       f"({target['model']}, {nc.human(target['size'])})."))
+    print(nc.c("1;31", f"\n  This erases everything on {dev} "
+                       f"({target['model']}, {nc.human(target['size'])})!"))
     if target["mounts"]:
         print(nc.c("1;33", "  It's mounted at " + ", ".join(target["mounts"]) +
-                          " and will be unmounted first."))
-    print("  There is no undo. Files, other partitions, all of it goes.")
+                          ", it gets unmounted first."))
+    print("  There's no undo. Files, other partitions, all of it goes.")
     if not assume_yes:
-        typed = input(f"  Type the device path {nc.c('1', dev)} to confirm: ").strip()
+        typed = input(f"  Type {nc.c('1', dev)} to confirm: ").strip()
         if typed != dev:
-            print("  Didn't match. Nothing was touched.")
+            print("  That didn't match, so nothing was changed.")
             return 1
 
     log = nc.Progress() if log is print else log
-    log(f"Formatting {dev} as exFAT '{LABEL}' with {cluster} clusters.")
+    log(f"Formatting {dev} as exFAT, named '{LABEL}'.")
 
     # Unmount anything currently mounted on this disk.
     for mp in target["mounts"]:
@@ -194,11 +194,11 @@ def format_card(device: str, assume_yes: bool = False, log=print) -> int:
     part = _wait_for_partition(dev, log)
     _run(["mkfs.exfat", "-c", cluster, "-L", LABEL, part], log)
     _run(["partprobe", dev], log)
-    log(f"Done. {part} is exFAT, labeled {LABEL}, {cluster} clusters.")
+    log(f"Done. {part} is exFAT, named {LABEL}.")
     if hasattr(log, "done"):
         log.done()
-    print(nc.c("1;32", "\n  Card ready. It should remount on its own; if not, "
-                      "unplug and replug it."))
+    print(nc.c("1;32", "\n  The card's ready. It should show up again on its own, if "
+                      "not, unplug it and plug it back in."))
     return 0
 
 
@@ -227,14 +227,14 @@ def _wait_for_partition(dev: str, log) -> str:
     parts = _partitions(dev)
     if parts:
         return parts[0]
-    raise FormatError(f"partition {want} never appeared")
+    raise FormatError(f"The new partition {want} never showed up. Try unplugging the card and running this again.")
 
 
 def run(dest: str | None = None, device: str | None = None,
         assume_yes: bool = False) -> int:
     # dest (a mounted card path) is ignored: formatting works on the whole disk,
     # which the tool picks itself.
-    nc.banner("Format a card as exFAT")
+    nc.banner("Format a card")
     try:
         return format_card(device or "", assume_yes=assume_yes)
     except FormatError as e:
@@ -243,9 +243,9 @@ def run(dest: str | None = None, device: str | None = None,
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Format a card as an exFAT nomad card (Linux).")
-    ap.add_argument("--device", help="whole disk to format, e.g. /dev/sdb (skips the picker)")
-    ap.add_argument("-y", "--yes", action="store_true", help="skip the typed confirmation")
+    ap = argparse.ArgumentParser(description="Wipe a card and set it up as an exFAT Nomad card. Linux only, and it erases everything on the card!")
+    ap.add_argument("--device", help="the whole disk to format, like /dev/sdb (skips the picker)")
+    ap.add_argument("-y", "--yes", action="store_true", help="skip typing the disk to confirm (be careful)")
     args = ap.parse_args()
     try:
         return format_card(args.device or "", assume_yes=args.yes)
@@ -258,5 +258,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except KeyboardInterrupt:
-        print("\ncancelled.")
+        print("\nCancelled.")
         sys.exit(130)

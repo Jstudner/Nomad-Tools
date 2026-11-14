@@ -1,39 +1,35 @@
 #!/usr/bin/env python3
 """
-Shared bits every nomad card tool uses.
+Shared bits every Nomad card tool uses: the colours, the live progress bar,
+and the "pick a card" menu.
 
-Every tool in this folder uses these so they all look and behave the same: the
-same colours, the same live progress bar, and the same "pick a card" menu.
-
-Card discovery is cross-platform (see cards.py): Linux, Windows and macOS. This
-folder is self-contained. It needs only Python (plus Pillow for image work and
-Node for ZIM work), not a nomad Manager install, so it can be copied and run
-anywhere.
+Card discovery works on Linux, Windows and macOS (see cards.py). This folder is
+self-contained. It needs only Python (plus Pillow for image work and Node for
+ZIM work), not a Nomad Manager install, so it can be copied and run anywhere.
 """
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
 import cards
 
 
-# ── terminal styling ──────────────────────────────────────────────────────────
+# terminal styling
 
 def _prepare_console() -> None:
     """Make this tool's output safe on Windows.
 
-    Two separate problems, both Windows only:
-
-    1. The box-drawing and tick characters used throughout are not in cp1252 or
-       cp437. A console window copes (Python writes it as UTF-16), but the
-       moment output is redirected or piped, Python falls back to the ANSI code
-       page and the very first banner dies with UnicodeEncodeError. Forcing
-       UTF-8 with errors="replace" means the worst case is a "?" not a crash.
-    2. Colours are ANSI escapes, and conhost does not process those unless the
-       process opts in. Without this the menu prints literal <-[1;36m noise.
+    1. The box-drawing and tick characters aren't in cp1252 or cp437. A console
+       window copes (Python writes UTF-16), but once output is redirected or
+       piped Python falls back to the ANSI code page and the first banner dies
+       with UnicodeEncodeError. With UTF-8 and errors="replace" the worst case
+       is a "?".
+    2. Colours are ANSI escapes, and conhost ignores those unless the process
+       opts in. Without this the menu prints literal <-[1;36m codes.
     """
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -84,7 +80,7 @@ class Progress:
     """A callable log with a live progress bar pinned to the current line.
 
     Ordinary log lines scroll above the bar. Also exposes .plan/.step/.pct so it
-    can be handed straight to nomad Manager's sd/archives.py, which drives those.
+    can be handed straight to Nomad Manager's sd/archives.py, which drives those.
     Falls back to plain prints when stdout isn't a terminal.
     """
 
@@ -95,13 +91,13 @@ class Progress:
         self._detail: str | None = None
         self._active = False   # a bar is currently drawn on the line
 
-    # log a line -------------------------------------------------------------
+    # log a line
     def __call__(self, line: str) -> None:
         self._clear()
         print(line)
         self._redraw()
 
-    # sd/archives.py interface ----------------------------------------------
+    # sd/archives.py interface
     def plan(self, steps: list[str]) -> None:
         self.__call__("  steps: " + " → ".join(steps))
 
@@ -115,7 +111,7 @@ class Progress:
         self._detail = detail
         self._redraw()
 
-    # rendering --------------------------------------------------------------
+    # rendering
     def _clear(self) -> None:
         if _TTY and self._active:
             sys.stdout.write("\r\033[K")
@@ -139,7 +135,83 @@ class Progress:
             self._active = False
 
 
-# ── card discovery / selection ────────────────────────────────────────────────
+# card space
+
+class CardFull(Exception):
+    """A step would leave the card with less than its reserve."""
+
+
+class CardSpace:
+    """How full a card is, what a job will add, and a stop before it overfills.
+
+    Every tool that puts files on a card can use it the same way:
+
+        space = CardSpace(card)
+        space.show()                                   # where the card stands
+        space.show(adding=plan_bytes, what="maps")     # ... and after the plan
+        space.need(file_size, "Washington map")        # raises CardFull if it won't fit
+        space.added("Washington map", n)               # one line per step: what went on, what's left
+
+    A reserve stays free (1% of the card, at least 256 MB). A card filled to the last
+    byte is slow to write and leaves no room for Nomad's own index files."""
+
+    BAR_W = 30
+
+    def __init__(self, root, reserve: int | None = None) -> None:
+        self.root = Path(root)
+        self.refresh()
+        self.reserve = reserve if reserve is not None else max(256 * 1024 ** 2, self.total // 100)
+        self.tally = 0                 # what added() has reported: the files this job wrote
+
+    def refresh(self) -> None:
+        du = shutil.disk_usage(self.root)
+        self.total, self.used, self.free = du.total, du.used, du.free
+
+    @property
+    def room(self) -> int:
+        """What can still go on before the reserve."""
+        self.refresh()
+        return max(0, self.free - self.reserve)
+
+    def bar(self, adding: int = 0) -> str:
+        w = self.BAR_W
+        used = int(w * self.used / self.total) if self.total else 0
+        add = min(w - used, int(round(w * adding / self.total))) if self.total and adding else 0
+        if adding and not add:
+            add = 1 if used < w else 0
+        over = adding > self.free - self.reserve
+        return (c("36", "█" * used) + c("31" if over else "33", "█" * add) + c("2", "░" * (w - used - add)))
+
+    def show(self, adding: int = 0, what: str = "this") -> bool:
+        """Print where the card stands (and after `adding` more). False if it won't fit."""
+        self.refresh()
+        print(f"  {self.bar(adding)}  {human(self.used)} used of {human(self.total)}, {human(self.free)} free")
+        if adding:
+            after = self.free - adding
+            ok = adding <= self.free - self.reserve
+            line = f"  {'+' if ok else '!'} {human(adding)} for {what} → {human(max(0, after))} free after"
+            print(c("33" if ok else "1;31", line) if ok else c("1;31", line + ", more than the card has room for"))
+            return ok
+        return True
+
+    def need(self, n: int, what: str) -> None:
+        if n > self.room:
+            raise CardFull(f"{what} needs {human(n)}, the card has {human(self.room)} to spare")
+
+    def added(self, what: str, n: int) -> None:
+        """One line per finished step: n is the size of the files the step wrote (the card's
+        own used figure moves with filesystem rounding and anything else writing to it)."""
+        self.tally += n
+        self.refresh()
+        print(f"    {c('32', '+' + human(n)):>18}  {what:<34} {c('2', f'{human(self.free)} free')}")
+
+    def summary(self) -> None:
+        self.refresh()
+        print(f"  {self.bar()}  {human(self.used)} used of {human(self.total)}, {human(self.free)} free"
+              + (f"  ({human(self.tally)} added)" if self.tally else ""))
+
+
+# card discovery and selection
 
 def choose_card(explicit: str | None = None,
                 prompt: str = "Which card?") -> str | None:
@@ -152,7 +224,7 @@ def choose_card(explicit: str | None = None,
     if explicit:
         mp = Path(explicit).expanduser()
         if not mp.is_dir():
-            print(c("1;31", f"error: {mp} is not a directory / not mounted."))
+            print(c("1;31", f"Can't find {mp}. Is the card plugged in?"))
             return None
         return str(mp)
 
@@ -165,15 +237,15 @@ def choose_card(explicit: str | None = None,
             free = f"free {human(e['free'])}" if e["free"] is not None else human(e["size"])
             print(f"  {i:>2}. {e['label']:<14} {(e['model'] or ''):<20} {free:<14} {state}{star}")
     else:
-        print(c("2", "  (no removable cards detected. Plug one in, or type a path)"))
+        print(c("2", "  (no cards found. Plug one in, or type where it is)"))
     manual_n = len(entries) + 1
-    print(f"  {manual_n:>2}. Enter a path manually")
+    print(f"  {manual_n:>2}. Type where the card is")
     print(f"   0. Cancel")
 
     while True:
         raw = input("Choose a number: ").strip()
         if not raw.isdigit():
-            print("  please type one of the numbers above.")
+            print("  Type one of the numbers above.")
             continue
         n = int(raw)
         if n == 0:
@@ -182,23 +254,23 @@ def choose_card(explicit: str | None = None,
             e = entries[n - 1]
             if e["mountpoint"]:
                 return e["mountpoint"]
-            print(f"  mounting {e['partition']} …")
+            print(f"  Mounting {e['partition']}...")
             try:
                 return cards.mount_partition(e["partition"], log=lambda s: print(f"    {s}"))
             except Exception as exc:
-                print(c("1;31", f"  couldn't mount that card: {exc}"))
+                print(c("1;31", f"  Couldn't mount that card: {exc}"))
                 continue
         if n == manual_n:
-            p = Path(input("  path to card root: ").strip()).expanduser()
+            p = Path(input("  Where is the card (for example E:\\ or /media/you/NOMAD): ").strip()).expanduser()
             if p.is_dir():
                 return str(p)
-            print("  that path isn't a directory.")
+            print("  That isn't a folder.")
             continue
-        print("  number out of range.")
+        print("  That number isn't on the list.")
 
 
 def looks_like_nomad(root: str | Path) -> bool:
-    """True if `root` has the shape of a nomad card (best-effort)."""
+    """True if `root` has the shape of a Nomad card (best-effort)."""
     try:
         return bool(cards.is_nomad_mount(root))
     except Exception:
@@ -206,7 +278,7 @@ def looks_like_nomad(root: str | Path) -> bool:
 
 
 def page_hidden(root: str | Path, page: str) -> bool:
-    """True if the card's menu hides `page` (Admin > Menu Pages, kept in /.system-ui.json).
+    """True if the card's menu hides `page` (the admin panel's Pages, kept in /.system-ui.json).
 
     The card template ships Games, Maps, Archive, Chat, Translate, Cookbook and
     Workshop hidden, so content added for them is invisible until switched on.
@@ -222,4 +294,4 @@ def hidden_page_note(root: str | Path, page: str, label: str) -> None:
     """Say where to turn a page on, if it is hidden on this card."""
     if page_hidden(root, page):
         print(c("1;33", f"  The {label} page is switched off on this card. Turn it on in "
-                        f"Admin > Menu Pages > {label}."))
+                        f"the admin panel, under Pages."))

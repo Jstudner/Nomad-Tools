@@ -124,7 +124,13 @@ def read_roads(pbf_paths, log=print):
             coord_chunks.append(np.array(cs, dtype=np.float64))
             offs.append(offs[-1] + len(rs))
             w_cls.append(og.CLASS_CODE[cls])
-            nm = tags.get("name") or tags.get("ref")
+            # Highways go by their number: a bridge or tunnel on I-90 carries its own name,
+            # which split one road into five steps, and "I-90", "I 90" and "I 90;US 97" are
+            # all the same road. Other roads go by name, with the number as a fallback.
+            ref = tags.get("ref")
+            if ref:
+                ref = ref.split(";")[0].strip().replace("-", " ")
+            nm = ref if (cls in ("motorway", "trunk") and ref) else (tags.get("name") or ref)
             if nm:
                 if nm not in name_idx:
                     name_idx[nm] = len(names)
@@ -138,7 +144,7 @@ def read_roads(pbf_paths, log=print):
             log(f"  {Path(path).name}: {kept:,} ways so far")
     del seen_ways
     if not kept:
-        raise RuntimeError("no routable highways found in that extract")
+        raise RuntimeError("no roads to route on were found in that extract")
     if dupes:
         log(f"  skipped {dupes:,} ways shared across extract borders")
     refs = np.concatenate(ref_chunks)
@@ -225,7 +231,11 @@ def build_graph_from_pbf(pbf_paths, log=print, places_cap=50000):
 
 
 def _places_from_pbf(pbf_paths, cap, log=print):
-    """Named nodes worth searching for, filed into browsable categories.
+    """Named places worth searching for, filed into browsable categories.
+
+    Points and mapped areas both: a market, park, campus or lake is usually drawn
+    as an area, and searching for "Pike Place Market" found only the shops inside
+    it. An area is placed at the middle of its outline.
 
     Everything that lands in a real category is kept; only the unclassified
     leftovers compete for whatever budget remains. Emitted in a compact shape
@@ -236,9 +246,10 @@ def _places_from_pbf(pbf_paths, cap, log=print):
     keep, filler, seen = [], [], set()
     kinds, kind_idx = [], {}
     for path in _as_list(pbf_paths):
-        fp = osmium.FileProcessor(str(path)).with_filter(osmium.filter.KeyFilter("name"))
+        fp = (osmium.FileProcessor(str(path)).with_locations().with_areas()
+              .with_filter(osmium.filter.KeyFilter("name")))
         for obj in fp:
-            if not obj.is_node():
+            if not (obj.is_node() or obj.is_area()):
                 continue
             tags = obj.tags
             nm = tags.get("name")
@@ -247,7 +258,13 @@ def _places_from_pbf(pbf_paths, cap, log=print):
             kind = next((tags[k] for k in og.PLACE_KEYS if k in tags), None)
             if kind is None:
                 continue
-            lat, lon = obj.location.lat, obj.location.lon
+            if obj.is_node():
+                lat, lon = obj.location.lat, obj.location.lon
+            else:
+                pts = [(n.lat, n.lon) for ring in obj.outer_rings() for n in ring if n.location.valid()]
+                if not pts:
+                    continue
+                lat, lon = sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts)
             key = (nm, round(lat, 4), round(lon, 4))
             if key in seen:
                 continue
@@ -273,10 +290,10 @@ def _places_from_pbf(pbf_paths, cap, log=print):
 def main() -> int:
     ap = argparse.ArgumentParser(description="Build a routing graph from .osm.pbf extracts.")
     ap.add_argument("--pbf", required=True, nargs="+",
-                    help="one or more extracts; several merge into one graph")
-    ap.add_argument("--out", required=True, help="region dir (routing/ is written inside)")
-    ap.add_argument("--tiled", action="store_true", help="write tiled cells instead of flat")
-    ap.add_argument("--budget", type=int, default=9000)
+                    help="one or more extracts. Several are merged into one graph")
+    ap.add_argument("--out", required=True, help="region folder (routing/ goes inside it)")
+    ap.add_argument("--tiled", action="store_true", help="write tiled cells instead of one flat graph")
+    ap.add_argument("--budget", type=int, default=9000, help="most vertices per cell, with --tiled (default 9000)")
     args = ap.parse_args()
 
     import route_tiles

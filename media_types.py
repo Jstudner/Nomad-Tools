@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-media_types: what every nomad card folder accepts, in one place.
+media_types: what every Nomad card folder accepts, in one place.
 
 Each page on the device decides for itself what it will show, using a fixed list
-of file extensions and a fixed idea of how deep to look. Those rules are not
-written down anywhere a user can read them, which is why "I copied a file on and
-nothing happened" is the most common question about the device.
+of file extensions and a fixed depth it reads to. Those rules aren't written
+down anywhere a user can read them, so "I copied a file on and nothing happened"
+is the most common question about the device.
 
-This module is that list, transcribed from the pages themselves:
+This module is that list, copied from the pages themselves:
 
     Movies    SD_Card_Template/movies.html      VIDEO_EXTS / IMAGE_EXTS / SUB_EXTS
     Shows     SD_Card_Template/shows.html       same lists, but folders only
@@ -30,10 +30,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
-# ── the shared extension vocabularies ─────────────────────────────────────────
-# Named per page rather than merged, because the pages disagree: Books
-# accepts .gif and .bmp covers, Movies does not; Gallery plays .ogg video, Movies
-# plays .mkv. Merging them would make the tools promise things the device won't do.
+# Extension lists, named per page instead of merged because the pages disagree:
+# Books accepts .gif and .bmp covers and Movies doesn't, Gallery plays .ogg video
+# and Movies plays .mkv. Merged lists would promise things the device won't do.
 
 VIDEO_MOVIE = frozenset({".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v"})
 VIDEO_GALLERY = frozenset({".mp4", ".webm", ".ogg", ".mov"})
@@ -72,7 +71,8 @@ ROM_CORES = {
 # deriveCore peels one of these off and looks at what's underneath, so
 # "Zelda.nes.zip" works. A bare "Zelda.zip" does not: there is no inner
 # extension to read, and the game is silently skipped.
-ROM_WRAPPERS = frozenset({".zip", ".iso", ".bin", ".7z", ".rar"})
+ROM_WRAPPERS = frozenset({".zip", ".iso", ".bin", ".7z", ".rar",
+                          ".gz"})   # Speed up games: Nomad sends Game.gba.gz as Game.gba
 
 # cookbook.html NOT_RECIPE: /^(readme|index|notes|_.*)$/i. Documentation that
 # lives beside the recipes. Without this the folder's README shows up on the
@@ -112,7 +112,7 @@ class Bucket:
 BUCKETS: tuple[Bucket, ...] = (
     Bucket(
         folder="Movies",
-        summary="films, each with an optional poster beside it",
+        summary="films, with a poster next to each one if you want",
         media=VIDEO_MOVIE,
         covers=IMAGE_MOVIE,
         companions=SUBTITLE,
@@ -120,23 +120,23 @@ BUCKETS: tuple[Bucket, ...] = (
         scan_depth=10,
         cover="an image named like the video (Dune.mp4 + Dune.jpg)",
         notes=(
-            "Subtitles ride along with the film and may carry a language suffix, "
-            "as in Dune.en.srt.",
+            "Subtitles go next to the film and can have a language on the end, "
+            "like Dune.en.srt.",
         ),
     ),
     Bucket(
         folder="Shows",
-        summary="series, browsed season by season",
+        summary="TV series, browsed season by season",
         media=VIDEO_MOVIE,
         covers=IMAGE_MOVIE,
         companions=SUBTITLE,
-        layout="a folder per show, seasons inside it. One show, one folder.",
+        layout="one folder per show, with the seasons inside it.",
         scan_depth=10,
         cover="an image inside the show folder named poster, cover, folder or art",
         folders_only=True,
         notes=(
-            "The Shows page lists folders and nothing else. An episode dropped "
-            "straight into /Shows is indexed but never appears.",
+            "The Shows page only lists folders. An episode put straight "
+            "into /Shows won't show up.",
         ),
     ),
     Bucket(
@@ -148,10 +148,10 @@ BUCKETS: tuple[Bucket, ...] = (
         scan_depth=1,
         cover="an image named like the book (Dune.epub + Dune.jpg)",
         notes=(
-            "A folder of 3 or more loose page images, with no ebook or audio "
-            "file in it, is treated as one unpacked comic and is not opened "
-            "further. A .cbz or .cbr is just a file and needs no such folder.",
-            "The index reads one level down. A book buried deeper is not found.",
+            "A folder with 3 or more page images and no ebook or audio file "
+            "in it counts as one comic. A .cbz or .cbr works fine on its own "
+            "and doesn't need a folder.",
+            "Books only looks one folder down. A book any deeper won't show up.",
         ),
     ),
     Bucket(
@@ -170,22 +170,23 @@ BUCKETS: tuple[Bucket, ...] = (
         layout="loose files, or folders to group them.",
         scan_depth=10,
         notes=(
-            "Thumbnails are made in the browser from the full file, so very large "
-            "photos make the grid slow to fill.",
+            "Run Pictures > Gallery previews after adding photos (Add media does it "
+            "for you). Without them the Gallery loads every whole photo, so big "
+            "photos make it slow to fill in.",
         ),
     ),
     Bucket(
         folder="Games",
-        summary="emulated ROMs and the built-in browser games",
+        summary="ROMs for the emulators, plus the built-in games",
         media=frozenset(ROM_CORES),
         covers=IMAGE_SIDECAR,
         layout="loose ROMs, or folders to group them.",
         scan_depth=10,
         cover="an image named like the ROM (Zelda.nes + Zelda.png)",
         notes=(
-            "A zipped ROM must keep its real extension: Zelda.nes.zip is read, "
-            "Zelda.zip is not.",
-            "The .html files already in /Games are the built-in games. Leave them.",
+            "A zipped ROM has to keep its real extension. Zelda.nes.zip works, "
+            "Zelda.zip doesn't.",
+            "The .html files already in /Games are the built-in games. Leave them there.",
         ),
     ),
     Bucket(
@@ -193,14 +194,14 @@ BUCKETS: tuple[Bucket, ...] = (
         summary="recipes in Markdown, JSON or Cooklang",
         media=RECIPE,
         covers=IMAGE_SIDECAR,
-        layout="loose recipes, or one folder per category. One level, no deeper.",
+        layout="loose recipes, or one folder per category. Only one level deep.",
         scan_depth=1,
         cover="an image named like the recipe (Cornbread.md + Cornbread.jpg)",
         notes=(
-            "The Cookbook page ships switched off. Turn it on in "
-            "Admin > Menu Pages > Cookbook.",
-            "Files called README, index or notes are treated as documentation, "
-            "not as recipes.",
+            "The Cookbook page is off to start with. Turn it on in "
+            "the admin panel, under Pages.",
+            "Files called README, index or notes are kept as notes for the "
+            "folder and don't show as recipes.",
         ),
     ),
     Bucket(
@@ -209,13 +210,13 @@ BUCKETS: tuple[Bucket, ...] = (
         media=MODEL_3D | MODEL_OTHER,
         covers=IMAGE_SIDECAR,
         companions=NOTE,
-        layout="loose models, or one folder per collection. One level, no deeper.",
+        layout="loose models, or one folder per collection. Only one level deep.",
         scan_depth=1,
         cover="an image named like the model (Bracket.stl + Bracket.jpg)",
         notes=(
-            "Only .stl, .obj and .3mf get a 3D preview. The rest are listed and "
-            "can be downloaded.",
-            "A .md or .txt named like the model becomes its print notes.",
+            "Only .stl, .obj and .3mf get a 3D preview. The rest are listed so "
+            "you can download them.",
+            "A .md or .txt named like the model shows up as its print notes.",
         ),
     ),
     Bucket(
@@ -224,7 +225,7 @@ BUCKETS: tuple[Bucket, ...] = (
         media=frozenset(),          # empty means "no extension rule"
         layout="whatever shape you like.",
         scan_depth=10,
-        notes=("Nothing here is filtered. If it copies, it is listed.",),
+        notes=("Nothing here is filtered. If it copies, it shows up.",),
     ),
 )
 

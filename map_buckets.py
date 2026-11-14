@@ -2,18 +2,17 @@
 """
 map_buckets: the list of US areas you can put on a card as an offline map.
 
-Instead of making anyone track down a bounding box, this offers ready made
-areas: all 50 states plus DC and the territories, five big multi state regions,
-the whole country, and a handful of hand picked sets like the East Coast and
-Route 66. Pick as many as you like and they join into one map.
+Ready made areas instead of a bounding box: all 50 states plus DC and the
+territories, five big multi state regions, the whole country, and some hand
+picked sets like the East Coast and Route 66. Pick as many as you like and they
+join into one map.
 
 Every area shows what it would cost on the card before anything downloads. Tile
 counts are traced around each state's outline and its coastline, and the bytes
-per tile and graph sizes were measured from finished builds. See SIZE NOTES
-below.
+per tile and graph sizes were measured from finished builds (size notes below).
 
-US only. The tile service the tools use is USGS, which is public domain and has
-no bulk download limit but covers the United States and nothing else.
+US only. The tile service is USGS, which is public domain and has no bulk
+download limit but only covers the United States.
 
     python map_buckets.py                       # browse areas and sizes
     python map_buckets.py --list states         # every state in a table
@@ -33,14 +32,13 @@ import nomad_common as nc
 CATALOG_PATH = Path(__file__).with_name("assets") / "map-buckets.json"
 COVERAGE_PATH = Path(__file__).with_name("assets") / "map-coverage.json"
 
-# ── SIZE NOTES ────────────────────────────────────────────────────────────────
-# Everything here was measured off the finished Pennsylvania region (55,298
-# tiles, a 343 MB map data file, a 404 MB road graph), with Delaware as a second
-# point. Reckon on being within about 15%. A denser or emptier state moves it.
+# Size notes. Measured off the finished Pennsylvania region (55,298 tiles, a
+# 343 MB map data file, a 404 MB road graph), with Delaware as a second point.
+# Expect to be within about 15%. A denser or emptier state moves it.
 
 # WebP quality 80 bytes per tile from the USGS topo service, measured at each
-# zoom level. The far out levels are bigger per tile than the street level ones,
-# because a single tile there is covering a whole region worth of detail.
+# zoom level. Zoomed out tiles are bigger than street level ones because each
+# one covers a whole region's worth of detail.
 TILE_BYTES = {0: 20000, 1: 20000, 2: 20000, 3: 20000, 4: 20000, 5: 20000,
               6: 19900, 7: 21900, 8: 18500, 9: 23600, 10: 19700, 11: 18400,
               12: 13000, 13: 11100, 14: 10400, 15: 10000, 16: 9800}
@@ -59,9 +57,9 @@ BUILD_RAM_BASE = 150 * 1024 * 1024
 # The five big regions come from the same source as the states and overlap them,
 # so picking one plus a state inside it must not count that state twice. These
 # lists were checked against the source: each region's tile count and download
-# size match the states below it to within 3%. Two are
-# not what the names suggest, so do not tidy them. "The West" includes the coast
-# states, and "Alaska and Hawaii" is the whole of what the source calls Pacific.
+# size match the states below it to within 3%. Two aren't what the names
+# suggest, so don't tidy them. "The West" includes the coast states, and
+# "Alaska and Hawaii" is the whole of what the source calls Pacific.
 US_SUPER = {
     "us-midwest": "il in ia ks mi mn mo ne nd oh sd wi",
     "us-northeast": "ct me ma nh nj ny pa ri vt",
@@ -95,8 +93,7 @@ def _us(codes: str) -> list[str]:
 
 
 # Hand picked sets, for groupings the map data source doesn't offer on its own.
-# Each is just a list of areas, so adding one costs nothing and it gets priced
-# exactly like any other pick.
+# Each is a list of areas and gets priced like any other pick.
 GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "east-coast": ("East Coast", "Maine down to Florida, every coastal state",
                    _us("me nh ma ri ct ny nj pa de md dc va nc sc ga fl")),
@@ -129,7 +126,7 @@ GROUPS: dict[str, tuple[str, str, list[str]]] = {
 }
 
 
-# ── the catalog ───────────────────────────────────────────────────────────────
+# the catalog
 
 _CACHE: dict | None = None
 _COV: dict | None = None
@@ -140,7 +137,7 @@ def load() -> dict:
     global _CACHE
     if _CACHE is None:
         if not CATALOG_PATH.is_file():
-            raise SystemExit(f"area list missing: {CATALOG_PATH}")
+            raise SystemExit(f"The area list is missing: {CATALOG_PATH}")
         _CACHE = json.loads(CATALOG_PATH.read_text())
     return _CACHE
 
@@ -187,20 +184,19 @@ def tile_count(b: dict, z: int) -> int:
     return t[str(top)] * (4 ** (z - top))
 
 
-# ── which tiles an area actually needs ────────────────────────────────────────
+# which tiles an area needs
 
 class Coverage:
     """The tiles a pick really needs, held as a map of the country at zoom 12.
 
-    A box around a state is a poor description of it. The box around the whole
-    country is mostly Pacific Ocean, and the one around Alaska wraps the planet.
-    So every area carries a traced outline of itself, trimmed to the coastline,
-    and downloads follow that instead of the box. The size estimate counts the
-    very same thing, which is why the number quoted up front is the number you
-    end up with.
+    A bounding box is a bad fit: the one around the whole country is mostly
+    Pacific Ocean, and the one around Alaska wraps the planet. So every area
+    carries a traced outline trimmed to the coastline, and downloads follow
+    that. The size estimate counts the same tiles, so the number shown up front
+    matches what you end up with.
 
-    The map is 2 MB of bits for the entire world at zoom 12, so this stays cheap
-    no matter how much gets picked.
+    The map is 2 MB of bits for the whole world at zoom 12, so it stays cheap
+    however much gets picked.
     """
 
     Z = 12
@@ -263,7 +259,7 @@ def coverage_for(ids: list[str]) -> Coverage:
     return cov
 
 
-# ── working out what was picked ───────────────────────────────────────────────
+# working out what was picked
 
 def covers(bid: str) -> set[str]:
     """Areas swallowed by this one, so an overlapping pick is not counted twice."""
@@ -339,15 +335,14 @@ def merged_bbox(ids: list[str]) -> tuple[float, float, float, float]:
     return (w, s, e, n)
 
 
-# ── the size estimate ─────────────────────────────────────────────────────────
+# the size estimate
 
 def estimate(ids: list[str], z_min: int = 6, z_max: int = 14,
              webp: bool = True) -> dict:
     """Price a pick: tiles, road graph, places, time and memory to build.
 
     Two neighbouring states share a border, so the tiles along it get counted
-    for both. That runs a percent or two high, which is the safe way to be wrong
-    about a size.
+    for both. That runs a percent or two high, which is the safe side to be on.
     """
     ids, _ = dedupe(ids)
     tiles = tile_bytes = pbf_bytes = 0
@@ -407,7 +402,7 @@ def format_estimate(est: dict, indent: str = "  ") -> str:
         f"{indent}{nc.c('2', 'the tiles take about ' + _hours(est['tileHours']) + ' to download, ')}"
         + nc.c("2", f"plus {nc.human(est['pbfBytes'])} of map data "
                     f"and about {est['buildMinutes']:.0f} min to build"),
-        f"{indent}{nc.c('2', 'your PC needs about ' + nc.human(est['buildRam']) + ' of free memory while it builds')}",
+        f"{indent}{nc.c('2', 'this computer needs about ' + nc.human(est['buildRam']) + ' of free memory while it builds')}",
     ])
 
 
@@ -419,7 +414,7 @@ def warnings(est: dict, free: int | None = None) -> list[str]:
                    "memory, which is more than most computers have. Do it as two or "
                    "three smaller picks instead, each its own map on the card.")
     elif est["buildRam"] > 16 * 1024 ** 3:
-        out.append(f"Building this wants about {nc.human(est['buildRam'])} of memory. "
+        out.append(f"Building this needs about {nc.human(est['buildRam'])} of memory. "
                    "Close your other programs first.")
     if est["tileHours"] > 24:
         out.append(f"The map picture alone is about {_hours(est['tileHours'])} of "
@@ -431,7 +426,7 @@ def warnings(est: dict, free: int | None = None) -> list[str]:
     return out
 
 
-# ── browsing ──────────────────────────────────────────────────────────────────
+# browsing
 
 def _header() -> None:
     print(nc.c("2", f"       {'area':<24}{'tiles':>11}{'picture':>11}"
@@ -492,13 +487,13 @@ def _add_from(areas: list[dict], title: str, blurb: str, sel: list[str],
         print(nc.c("2", f"  {blurb}"))
         print_areas(areas, z_min, z_max)
         print(nc.c("2", "\n  picture = the map you look at, roads = what gives directions"))
-        print(nc.c("2", "  type the numbers you want (1 4 7, or 2-9, or all), or b to go back"))
+        print(nc.c("2", "  Type the numbers you want (1 4 7, or 2-9, or all), or b to go back"))
         raw = input("Add: ").strip()
         if not raw or raw.lower() in ("b", "back"):
             return
         picks = _parse_picks(raw, len(areas))
         if not picks:
-            print(nc.c("1;31", "  didn't catch that. Try 1 4 7, or 2-9, or all."))
+            print(nc.c("1;31", "  Didn't catch that. Try 1 4 7, or 2-9, or all."))
             continue
         for i in picks:
             bid = areas[i - 1]["id"]
@@ -508,11 +503,11 @@ def _add_from(areas: list[dict], title: str, blurb: str, sel: list[str],
 
 
 TOP_LEVELS = [
-    (11, "motorways and towns, no street names"),
+    (11, "highways and towns, no street names"),
     (12, "towns and main roads, good for driving between them"),
-    (13, "most streets, a solid middle"),
-    (14, "every street. This is what the Pennsylvania card uses"),
-    (15, "rarely worth it, the app already zooms past what you downloaded"),
+    (13, "most streets"),
+    (14, "every street"),
+    (15, "rarely worth it, since you can already zoom in past what you downloaded"),
 ]
 RECOMMENDED_TOP = 14
 
@@ -531,8 +526,8 @@ def ask_zooms(sel: list[str] | None = None, z_min: int = 6,
     print(nc.c("2", "  main roads, level 14 shows every street. Each level past 12 is about"))
     print(nc.c("2", "  four times as many tiles as the one below it, so this decides most"))
     print(nc.c("2", "  of the map's size."))
-    print(nc.c("2", "  You can still zoom in past the last level on the device, the picture"))
-    print(nc.c("2", "  just gets softer. Directions are not affected, the road data is kept"))
+    print(nc.c("2", "  You can still zoom in past the last level on Nomad. The picture just"))
+    print(nc.c("2", "  gets softer. Directions aren't affected because the road data is kept"))
     print(nc.c("2", "  separate from the picture."))
 
     print(nc.c("1", f"\n  {label}:"))
@@ -551,14 +546,14 @@ def ask_zooms(sel: list[str] | None = None, z_min: int = 6,
             lo, hi = (int(p) for p in raw.split("-")) if "-" in raw \
                 else (int(raw), int(raw))
         except ValueError:
-            print(nc.c("1;31", "  needs to look like 6-14."))
+            print(nc.c("1;31", "  Type it like 6-14."))
             continue
         if not (0 <= lo <= hi <= 16):
-            print(nc.c("1;31", "  levels run 0 to 16, and the first can't be past the second."))
+            print(nc.c("1;31", "  Levels go from 0 to 16, and the first number can't be bigger than the second."))
             continue
         if hi > 15:
-            print(nc.c("1;33", "  heads up: past 15 the tile count gets enormous and the"))
-            print(nc.c("1;33", "  device can already zoom in further than you downloaded."))
+            print(nc.c("1;33", "  Heads up: past 15 the tile count gets huge, and Nomad can already"))
+            print(nc.c("1;33", "  zoom in further than what you downloaded."))
         return lo, hi
 
 
@@ -567,9 +562,9 @@ def pick(z_min: int = 6, z_max: int = 14) -> tuple[list[str], tuple[int, int]] |
     sel: list[str] = []
     chose_levels = False
     while True:
-        nc.banner("Offline map areas")
+        nc.banner("Map areas and sizes")
         print("Choose the parts of the country you want on the card. Pick as many as")
-        print("you like, they join into one map.\n")
+        print("you like and they join into one map.\n")
         print("  1. States and territories   " + nc.c("2", "all 50, plus DC, Puerto Rico, Virgin Islands"))
         print("  2. Big regions              " + nc.c("2", "the Northeast, the South, the whole country"))
         print("  3. Ready made sets          " + nc.c("2", "East Coast, New England, Route 66, Lower 48"))
@@ -584,7 +579,7 @@ def pick(z_min: int = 6, z_max: int = 14) -> tuple[list[str], tuple[int, int]] |
             print(format_estimate(est, "    "))
             for w in warnings(est):
                 print(nc.c("1;33", f"    ! {w}"))
-            print("\n  c. Start the pick over")
+            print("\n  c. Start over")
             print(nc.c("1", "  d. Done, use this"))
         print("  0. Cancel")
 
@@ -626,7 +621,7 @@ def pick(z_min: int = 6, z_max: int = 14) -> tuple[list[str], tuple[int, int]] |
                     break
                 picks = _parse_picks(raw, len(keys))
                 if not picks:
-                    print(nc.c("1;31", "  didn't catch that. Try 1 4 7, or 2-9, or all."))
+                    print(nc.c("1;31", "  Didn't catch that. Try 1 4 7, or 2-9, or all."))
                     continue
                 for i in picks:
                     for m in GROUPS[keys[i - 1]][2]:
@@ -635,16 +630,16 @@ def pick(z_min: int = 6, z_max: int = 14) -> tuple[list[str], tuple[int, int]] |
                 break
             continue
         if choice == "4":
-            hits = search(input("  name: ").strip())
+            hits = search(input("  Name: ").strip())
             if not hits:
-                print(nc.c("2", "  nothing matched that."))
+                print(nc.c("2", "  Nothing matched that."))
                 continue
             _add_from(hits, "Matches", "", sel, z_min, z_max)
             continue
-        print("  type 1, 2, 3, 4, z, c, d or 0.")
+        print("  Type 1, 2, 3, 4, z, c, d or 0.")
 
 
-# ── fetching the map data ─────────────────────────────────────────────────────
+# fetching the map data
 
 def default_work_dir() -> Path:
     """Where downloaded map data is kept. It sits next to the tools so a copy of
@@ -659,14 +654,14 @@ def fetch_pbf(bid: str, work_dir: Path | str | None = None, log=print,
 
     b = get(bid)
     if not b or not b.get("pbf"):
-        raise ValueError(f"no map data available for {bid}")
+        raise ValueError(f"no map data for {bid}")
     work = Path(work_dir or default_work_dir())
     work.mkdir(parents=True, exist_ok=True)
     dest = work / (bid.replace("/", "-") + ".osm.pbf")
     want = b.get("pbfBytes") or 0
     have = dest.stat().st_size if dest.is_file() else 0
     if want and have == want:
-        log(f"  {b['name']}: already have {nc.human(have)}")
+        log(f"  {b['name']}: already downloaded ({nc.human(have)})")
         return dest
 
     headers = {"User-Agent": "nomad-card-tools/1.0 (offline media server)"}
@@ -674,7 +669,7 @@ def fetch_pbf(bid: str, work_dir: Path | str | None = None, log=print,
     if have and want and have < want:
         headers["Range"] = f"bytes={have}-"
         mode = "ab"
-        log(f"  {b['name']}: picking up at {nc.human(have)} of {nc.human(want)}")
+        log(f"  {b['name']}: carrying on from {nc.human(have)} of {nc.human(want)}")
     else:
         have = 0
         log(f"  {b['name']}: downloading {nc.human(want)}")
@@ -702,13 +697,13 @@ def fetch_all(ids: list[str], work_dir=None, log=print, progress=None) -> list[P
     return [fetch_pbf(i, work_dir, log, progress) for i in ids]
 
 
-# ── menu entry ────────────────────────────────────────────────────────────────
+# menu entry
 
 def run(dest: str | None = None) -> int:
     """Browse and price areas. Downloads nothing at all."""
     picked = pick()
     if not picked:
-        print("cancelled.")
+        print("Cancelled.")
         return 1
     ids, zooms = picked
     est = estimate(ids, *zooms)
@@ -716,20 +711,19 @@ def run(dest: str | None = None) -> int:
     print(format_estimate(est))
     for w in warnings(est):
         print(nc.c("1;33", f"  ! {w}"))
-    print(nc.c("2", "\n  Nothing was downloaded. To actually build this, go back to the menu"))
-    print(nc.c("2", "  and choose 'Build a routing map', then pick the same areas. Or run:"))
+    print(nc.c("2", "\n  Nothing was downloaded. To build this map, run:"))
     print(nc.c("2", f"    ./nomad_route.py --areas {' '.join(est['ids'])} "
                     f"--zooms {zooms[0]}-{zooms[1]}"))
     return 0
 
 
-# ── command line ──────────────────────────────────────────────────────────────
+# command line
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Browse the US areas you can put on a card, with sizes.")
+        description="See how much space US map areas would take on a card. Doesn't download anything.")
     ap.add_argument("areas", nargs="*",
-                    help="state codes, area ids or set names, e.g. pa nj de or east-coast")
+                    help="state codes, area ids or set names, like pa nj de or east-coast")
     ap.add_argument("--list", dest="listing",
                     help="print a table: states, regions or sets")
     ap.add_argument("--zooms", default="6-14", help="detail levels, min-max (default 6-14)")
@@ -739,7 +733,7 @@ def main() -> int:
     try:
         z_min, z_max = (int(p) for p in args.zooms.split("-"))
     except ValueError:
-        ap.error("--zooms looks like 6-14")
+        ap.error("--zooms should look like 6-14")
 
     if args.listing:
         key = args.listing.lower()
@@ -750,20 +744,20 @@ def main() -> int:
         elif key in ("sets", "set", "groups", "bundles"):
             print_groups(z_min, z_max)
         else:
-            print("choose one of: states, regions, sets")
+            print("Use one of these: states, regions, sets")
             return 1
         return 0
 
     if not args.areas:
         picked = pick(z_min, z_max)
         if not picked:
-            print("cancelled.")
+            print("Cancelled.")
             return 1
         ids, (z_min, z_max) = picked
     else:
         ids, unknown = resolve(args.areas)
         if unknown:
-            print(nc.c("1;31", "don't know: " + ", ".join(unknown)))
+            print(nc.c("1;31", "Don't know these areas: " + ", ".join(unknown)))
             return 1
 
     est = estimate(ids, z_min, z_max)
@@ -781,5 +775,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except KeyboardInterrupt:
-        print("\naborted.")
+        print("\nStopped.")
         sys.exit(130)

@@ -1,0 +1,7 @@
+# What Nomad-Tools needs beyond Python itself. The launchers install these into .venv
+# (a folder beside the tools) the first time, and again whenever this file changes.
+osmium>=4.0        # reading OpenStreetMap extracts: directions, search, addresses, trails
+pmtiles>=3.4       # cutting map tiles out of Protomaps builds
+numpy>=1.24        # road network building
+Pillow>=10.0       # cover images
+zstandard>=0.22; python_version < "3.14"   # Speed up archives (Python 3.14 has zstd built in)

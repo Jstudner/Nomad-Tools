@@ -2,11 +2,11 @@
 /*
  * zim_indexer.js - Nomad ZIM preprocessing.
  *
- * The ESP32 cannot random-access a multi-GB ZIM to answer a search: a title
+ * The ESP32 can't random-access a multi-GB ZIM to answer a search: a title
  * binary search is dozens of scattered range reads into a 2GB FAT32 file, which
- * on real hardware is punishingly slow and floods/wedges the async web server.
- * So we do that work here on the PC (where random access is cheap) and emit a
- * compact sidecar index the device can search with ~2 small, sequential reads.
+ * is very slow on the device and floods or wedges the async web server. So that
+ * work happens here on the PC (where random access is cheap), and the output is
+ * a compact sidecar index the device can search with ~2 small, sequential reads.
  *
  *   node zim_indexer.js <cardRoot>
  *
@@ -44,7 +44,6 @@ function loadNomadZim(cardRoot) {
     cardRoot && path.join(cardRoot, 'assets', 'nomad-zim.js'),
     path.resolve(__dirname, '../sd_template/assets/nomad-zim.js'),
     path.resolve(__dirname, 'nomad-zim.js'),
-    path.resolve(__dirname, '../../jcorp-nomad-main (4)/jcorp-nomad-main/SD_Card_Template/assets/nomad-zim.js'),
   ].filter(Boolean);
   for (const c of candidates) if (fs.existsSync(c)) { return { mod: require(c), from: c }; }
   throw new Error('nomad-zim.js not found (need it on the card at /assets/, in sd_template/assets/, or via NOMAD_ZIM_JS). Tried:\n  ' + candidates.join('\n  '));
@@ -60,7 +59,7 @@ const LIMIT = parseInt(process.env.NOMAD_ZIM_LIMIT || '0', 10) || 0; // 0 = all 
 
 function log(msg) { process.stdout.write(msg + '\n'); }
 
-// --- fs-backed byte source with the same interface HttpSource exposes ---
+// fs-backed byte source with the same interface HttpSource exposes
 class FileSource {
   constructor(parts) {
     this.parts = parts.map(p => ({ path: p.path, size: p.size, fd: fs.openSync(p.path, 'r') }));
@@ -86,7 +85,7 @@ class FileSource {
   close() { for (const p of this.parts) try { fs.closeSync(p.fd); } catch (e) {} }
 }
 
-// --- discover archives under /Archive, grouping split parts (kiwix zimsplit) ---
+// discover archives under /Archive, grouping split parts (kiwix zimsplit)
 function discoverArchives(archiveDir) {
   const groups = new Map();
   for (const name of fs.readdirSync(archiveDir)) {
@@ -427,7 +426,7 @@ async function splitShards(sortedPath, outDir) {
   return shards;
 }
 
-// ── cross-platform external sort ──────────────────────────────────────────────
+// Cross-platform external sort.
 // Reproduces `LC_ALL=C sort -t '\t' -k1,1 -s`: a STABLE sort on column 1 (the
 // text up to the first tab) using unsigned byte order. Keys are ASCII here, so
 // JS string comparison equals byte order; stability (GNU -s) means equal keys

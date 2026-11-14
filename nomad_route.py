@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-nomad_route: build a full offline routing region for a nomad card.
+nomad_route: build a full offline routing region for a Nomad card.
 
 One region, one folder under /Maps/<id>/, three parts stitched together:
 
@@ -11,9 +11,9 @@ One region, one folder under /Maps/<id>/, three parts stitched together:
   index.html    a self-contained Leaflet app: search, tap or GPS to set a start
                 and destination, and turn-by-turn directions, all offline
 
-Pick an area and zoom levels once; tiles and road data are pulled for the same
-box so the picture and the routing always agree. The result opens straight from
-nomad's Maps page.
+Pick an area and zoom levels once. Tiles and road data are pulled for the same
+box so the picture and the routing always agree. The result opens from
+/Maps/<id>/index.html on Nomad (it isn't in the Maps page list).
 
     ./nomad_route.py                         # interactive
     ./nomad_route.py --name "Pittsburgh" --bbox -80.10,40.36,-79.86,40.50 \
@@ -44,28 +44,28 @@ def run(dest: str | None = None, name: str | None = None, region_id: str | None 
         tiled: bool = False, budget: int = 9000, buckets=None,
         work_dir=None) -> int:
     nc.banner("Build a routing map")
-    print("This builds a full offline map for the areas you choose: the picture you")
-    print("look at, plus the road network and a place search behind it, so Nomad")
-    print("gives you real turn by turn directions with no internet at all.")
+    print("This builds an offline map for the areas you pick. You get the map itself plus")
+    print("the roads and a place search, so Nomad can give turn by turn directions with")
+    print("no internet at all.")
     print(nc.c("2", "\nIt runs in three steps and tells you the size before it starts."))
-    print(nc.c("2", "Safe to interrupt at any point, re run it and it picks up again.\n"))
+    print(nc.c("2", "You can stop it at any point. Run it again and it picks up where it left off.\n"))
 
     # Two ways in: choose ready made areas, or type a box for somewhere small.
     coverage = None
     if buckets is None and bbox is None and not assume_yes:
         print("  1. Choose areas    " + nc.c("2", "states, big regions and ready made sets, with sizes"))
-        print("  2. Bounding box    " + nc.c("2", "four numbers, for a town or a county"))
+        print("  2. Type the edges  " + nc.c("2", "four numbers, for a town or a county"))
         if input("Choose [1]: ").strip() != "2":
             picked = map_buckets.pick(*(zooms or (6, 14)))
             if not picked:
-                print("cancelled.")
+                print("Cancelled.")
                 return 1
             buckets, zooms = picked
 
     if buckets:
         buckets, unknown = map_buckets.resolve(buckets)
         if unknown:
-            print(nc.c("1;31", "don't know: " + ", ".join(unknown)))
+            print(nc.c("1;31", "Don't know these areas: " + ", ".join(unknown)))
             return 1
         buckets, _ = map_buckets.dedupe(buckets)
         names = [map_buckets.get(b)["name"] for b in buckets]
@@ -79,13 +79,13 @@ def run(dest: str | None = None, name: str | None = None, region_id: str | None 
 
     name = name or input("Name for this map (this is what the Maps page shows): ").strip()
     if not name:
-        print("cancelled.")
+        print("Cancelled.")
         return 1
     region_id = region_id or map_tiles.slugify(name)
 
     bbox = bbox or map_tiles.ask_bbox()
     if not bbox:
-        print("cancelled.")
+        print("Cancelled.")
         return 1
     if zooms:
         z_min, z_max = zooms
@@ -105,14 +105,14 @@ def run(dest: str | None = None, name: str | None = None, region_id: str | None 
             print(nc.c("1;33", f"  ! {w}"))
         if not assume_yes and input("\nGo ahead with this? [y/N] ").strip().lower() \
                 not in ("y", "yes"):
-            print("cancelled.")
+            print("Cancelled.")
             return 1
 
     # a state or bigger won't fit as one graph the phone loads whole; tiled mode
     # packs adaptive cells and streams only the ones along each trip
     if not tiled and not assume_yes and not buckets:
-        ans = input("\nIs this a large area, a whole state or bigger? Tiled routing then\n"
-                    "loads only the roads along each trip so it works at that scale. [y/N] ")
+        ans = input("\nIs this a big area, like a whole state or bigger? If so, directions only\n"
+                    "load the roads along each trip so phones can handle it. [y/N] ")
         tiled = ans.strip().lower() in ("y", "yes")
 
     if url_tpl is None:
@@ -123,9 +123,9 @@ def run(dest: str | None = None, name: str | None = None, region_id: str | None 
     attribution = attribution or url_tpl.split("/")[2]
     fmt = fmt or "jpg"
 
-    dest = nc.choose_card(dest, prompt="Which card should this region go on?")
+    dest = nc.choose_card(dest, prompt="Which card should this map go on?")
     if not dest:
-        print("cancelled.")
+        print("Cancelled.")
         return 1
     region_dir = Path(dest) / "Maps" / region_id
 
@@ -136,24 +136,24 @@ def run(dest: str | None = None, name: str | None = None, region_id: str | None 
                        attribution=attribution, fmt=fmt, assume_yes=assume_yes,
                        coverage=coverage, final_message=False)
     if rc not in (0, 2):        # 130 = interrupted, 1 = cancelled
-        print("stopped before building routing data.")
+        print("Stopped before the directions part was built.")
         return rc
 
     # 1b. shrink the tiles (WebP, ~40% smaller) so bigger/closer regions fit
     tile_fmt = fmt or "jpg"
     if optimize and optimize_tiles.Image is not None:
-        print(nc.c("1", "\n  Optimizing tiles (WebP)"))
+        print(nc.c("1", "\n  Shrinking the tiles (WebP)"))
         optimize_tiles.optimize_region(region_dir, "webp", quality)
         tile_fmt = "webp"
     elif optimize:
-        print(nc.c("1;31", "  Pillow not installed, keeping original tiles (pip install Pillow)."))
+        print(nc.c("1;31", "  Pillow isn't installed, so the tiles stay as they are (pip install Pillow)."))
 
     # 2. road network + places. Flat = one graph.bin loaded whole (best for a
     # county); tiled = adaptive cells fetched on demand (needed for a state or
     # bigger, where the whole graph won't fit in a phone).
-    print(nc.c("1", "\nStep 2 of 3: road network and places (from OpenStreetMap)"))
-    print(nc.c("2", "  Downloading and building the routing graph. This runs once and"))
-    print(nc.c("2", "  is quick for a town, a few minutes for a metro area.\n"))
+    print(nc.c("1", "\nStep 2 of 3: roads and places (from OpenStreetMap)"))
+    print(nc.c("2", "  Downloading the roads and getting them ready for directions. This is"))
+    print(nc.c("2", "  quick for a town and takes a few minutes for a city.\n"))
     places_path = region_dir / "routing" / "places.json"
     try:
         if buckets:
@@ -163,10 +163,10 @@ def run(dest: str | None = None, name: str | None = None, region_id: str | None 
             except ImportError as exc:
                 # the most common failure here, and the bare exception message
                 # ("No module named 'osmium'") tells nobody what to do
-                print(nc.c("1;31", f"  a map of this size needs two extra packages ({exc})."))
+                print(nc.c("1;31", f"  A map this big needs two extra packages ({exc})."))
                 print(nc.c("1", "      pip3 install numpy osmium"))
-                print(nc.c("2", "  they read the bulk map file from geofabrik."))
-                print(nc.c("2", "  the tiles are already downloaded; re-run to add routing."))
+                print(nc.c("2", "  They read the big map download from Geofabrik."))
+                print(nc.c("2", "  The tiles are already downloaded. Install those, then run it again to add directions."))
                 return 1
             prog = nc.Progress()
             pbfs = map_buckets.fetch_all(buckets, work_dir, log=prog, progress=prog)
@@ -185,8 +185,8 @@ def run(dest: str | None = None, name: str | None = None, region_id: str | None 
         else:
             stats = osm_graph.build_region_data(bbox, region_dir)
     except Exception as e:                                  # noqa: BLE001
-        print(nc.c("1;31", f"  routing build failed: {e}"))
-        print(nc.c("1;31", "  the tiles are fine; re-run to retry just the routing step."))
+        print(nc.c("1;31", f"  Building directions failed: {e}"))
+        print(nc.c("1;31", "  The tiles are fine. Run it again to retry just this step."))
         return 1
     places_bytes = places_path.stat().st_size if places_path.is_file() else 0
     if tiled:
@@ -201,9 +201,9 @@ def run(dest: str | None = None, name: str | None = None, region_id: str | None 
             "places_count": stats["places"],
         }
         routing_bytes = stats["binBytes"] + stats["idxBytes"] + places_bytes
-        print(nc.c("1", f"  tiled routing: {stats['cells']:,} cells, "
-                  f"{stats['nodes']:,} intersections, {stats['edges']:,} segments "
-                  f"({nc.human(stats['binBytes'])}, loads on demand)"))
+        print(nc.c("1", f"  directions: "
+                  f"{stats['nodes']:,} intersections, {stats['edges']:,} road segments "
+                  f"({nc.human(stats['binBytes'])}, loaded a bit at a time)"))
     else:
         routing_block = {
             "format": "flat",
@@ -214,14 +214,14 @@ def run(dest: str | None = None, name: str | None = None, region_id: str | None 
             "places_count": stats["places"],
         }
         routing_bytes = stats["graphBytes"] + places_bytes
-        print(nc.c("1", f"  routing graph: {stats['nodes']:,} intersections, "
+        print(nc.c("1", f"  directions: {stats['nodes']:,} intersections, "
                   f"{stats['edges']:,} road segments, {stats['places']:,} places "
                   f"({nc.human(stats['graphBytes'])})"))
 
     # 3. app + finalized manifest
-    print(nc.c("1", "\nStep 3 of 3: map app"))
+    print(nc.c("1", "\nStep 3 of 3: the map page"))
     if not APP_TEMPLATE.is_file():
-        print(nc.c("1;31", f"  app template missing: {APP_TEMPLATE}"))
+        print(nc.c("1;31", f"  The map page template is missing ({APP_TEMPLATE}). Try downloading the tools again."))
         return 1
     shutil.copyfile(APP_TEMPLATE, region_dir / "index.html")
 
@@ -248,38 +248,37 @@ def run(dest: str | None = None, name: str | None = None, region_id: str | None 
 
     total = manifest["sizeBytes"]
     print(nc.c("1", f"\nDone. '{name}' is ready on the card ({nc.human(total)} total)."))
-    # maps.html skips any region carrying its own app, so a routing build does
-    # not show up in the region list. Say so here, or someone waits hours for a
-    # map and then thinks the build failed.
-    print(nc.c("1;33", "  Routing maps do not appear in the Maps page region list yet."))
-    print(nc.c("2", "  Open it directly at:"))
-    print(nc.c("2", f"    http://192.168.4.1/Maps/{region_id}/index.html   (on the nomad's own Wi-Fi)"))
+    # maps.html skips any region carrying its own app, so a routing build doesn't
+    # show up in the region list. Without this line it looks like the build failed.
+    print(nc.c("1;33", "  Maps with directions don't show up in the Maps page list yet."))
+    print(nc.c("2", "  Open it straight from:"))
+    print(nc.c("2", f"    http://192.168.4.1/Maps/{region_id}/index.html   (on Nomad's own Wi-Fi)"))
     print(nc.c("2", f"    http://nomad.local/Maps/{region_id}/index.html   (in WiFi Mode)"))
-    print(nc.c("2", "  Tap a start and a destination, or search, for directions."))
+    print(nc.c("2", "  Tap a start and an end, or search, to get directions."))
     return 0
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Build an offline routing map (tiles + roads + app) onto a nomad card.")
-    ap.add_argument("--name", help="region name shown in the Maps page")
+        description="Build an offline map with turn by turn directions onto a Nomad card.")
+    ap.add_argument("--name", help="map name shown on the Maps page")
     ap.add_argument("--id", dest="region_id", help="folder name under /Maps")
     ap.add_argument("--bbox", help="west,south,east,north")
-    ap.add_argument("--zooms", help="min-max zoom levels, e.g. 11-15")
-    ap.add_argument("--url", help="custom XYZ tile URL template with {z}/{x}/{y}")
-    ap.add_argument("--attribution", help="attribution text")
+    ap.add_argument("--zooms", help="zoom levels, like 11-15")
+    ap.add_argument("--url", help="another tile server's URL, with {z}/{x}/{y} in it")
+    ap.add_argument("--attribution", help="credit line shown on the map")
     ap.add_argument("--format", dest="fmt", help="tile file extension (default jpg)")
-    ap.add_argument("-o", "--output", help="destination card mountpoint")
+    ap.add_argument("-o", "--output", help="where the card is mounted (skips the card picker)")
     ap.add_argument("-y", "--yes", action="store_true", help="don't ask before downloading")
     ap.add_argument("--no-optimize", dest="optimize", action="store_false",
-                    help="keep original JPEG tiles (skip the WebP shrink)")
-    ap.add_argument("--quality", type=int, default=80, help="WebP quality 1-100 (default 80)")
+                    help="keep the original JPEG tiles (don't shrink them to WebP)")
+    ap.add_argument("--quality", type=int, default=80, help="WebP picture quality 1-100 (default 80)")
     ap.add_argument("--tiled", action="store_true",
-                    help="build an on-demand tiled routing graph (for a state or bigger)")
+                    help="load the roads a bit at a time (for a state or bigger)")
     ap.add_argument("--budget", type=int, default=9000,
-                    help="max intersections per cell in tiled mode (default 9000)")
+                    help="most intersections per piece with --tiled (default 9000)")
     ap.add_argument("--areas", nargs="+",
-                    help="ready made areas instead of a bbox, e.g. pa nj de, or east-coast")
+                    help="ready made areas instead of --bbox, like pa nj de, or east-coast")
     ap.add_argument("--work", help="where to keep the downloaded map data")
     # a leading-minus bbox looks like a flag to argparse; fold it into --bbox=
     argv = sys.argv[1:]
@@ -303,7 +302,7 @@ def main() -> int:
                 else (int(args.zooms), int(args.zooms))
             zooms = (lo, hi)
         except ValueError:
-            ap.error("--zooms format: min-max, e.g. 11-15")
+            ap.error("--zooms should look like 11-15")
 
     return run(dest=args.output, name=args.name, region_id=args.region_id,
                bbox=bbox, zooms=zooms, url_tpl=args.url,
@@ -317,5 +316,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except KeyboardInterrupt:
-        print("\naborted.")
+        print("\nStopped.")
         sys.exit(130)

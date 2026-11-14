@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """
-Add offline translation to a nomad card.
+Add offline translation to a Nomad card.
 
 Nomad's Translate page runs entirely in the browser of whoever connects to it,
-so nothing is installed on the device itself. This tool's only job is to put
-the right files in /Translate on the card: the small browser runtime (once) and
-one folder per language model.
+so nothing is installed on the device itself. This tool puts the right files in
+/Translate on the card: the small browser runtime (once) and one folder per
+language model.
 
-Two way is the default. Asking for Spanish gets you English into Spanish *and*
-Spanish into English, because a phrasebook that only works one way is half a
-phrasebook.
+Two way is the default. Asking for Spanish gets you English into Spanish and
+Spanish into English.
 
 Sizes are per language pair, roughly 115 MB each way. That is what a phone
-copies over WiFi the first time it uses that pair, not every time. Bundles are
-much better value: one ~115 MB model covers all the Romance languages.
+copies over WiFi the first time it uses that pair, not every time. Bundles go
+further: one ~115 MB model covers all the Romance languages.
 
     ./translate_packs.py                      pick from a menu
     ./translate_packs.py --list               show packs and sizes, install nothing
@@ -41,7 +40,7 @@ RUNTIME_BASE = "https://unpkg.com/@xenova/transformers@2.17.2/dist"
 RUNTIME_FILES = [
     # the library itself
     "transformers.min.js",
-    # SIMD build, no threads: nomad is served over plain http, which is not a
+    # SIMD build, no threads: Nomad is served over plain http, which is not a
     # secure context, so SharedArrayBuffer (and the threaded build) is absent
     "ort-wasm-simd.wasm",
     # fallback for the rare browser without SIMD; only fetched if needed
@@ -49,7 +48,7 @@ RUNTIME_FILES = [
 ]
 
 # Only the files transformers.js actually loads. Anything else in the model
-# repo is wasted card space and wasted minutes over the nomad's WiFi.
+# repo wastes card space and minutes over Nomad's WiFi.
 MODEL_FILES = ["config.json", "tokenizer.json", "tokenizer_config.json",
                "generation_config.json"]
 ONNX_FILES = ["onnx/encoder_model_quantized.onnx",
@@ -141,10 +140,10 @@ COLLECTIONS = {
 }
 
 NOTES = {
-    "romance": "One model each way covering Spanish, French, Italian, Portuguese "
-               "and Romanian. Far smaller than separate packs, a little less "
-               "accurate than a dedicated pair.",
-    "everything": "Very wide coverage, noticeably lower quality.",
+    "romance": "One model each way for Spanish, French, Italian, Portuguese "
+               "and Romanian. Much smaller than separate packs, but a bit "
+               "less accurate.",
+    "everything": "Covers a lot of languages, but the translations are noticeably worse.",
     "korean": "Korean into English only. There is no English into Korean build.",
     "polish": "Polish into English only. There is no English into Polish build.",
     "turkish": "Turkish into English only. There is no English into Turkish build.",
@@ -160,7 +159,7 @@ PACK_ORDER = ["spanish", "french", "german", "italian",
 PACK_ORDER = [p for p in PACK_ORDER if p in CATALOG]
 
 
-# ── catalog helpers ───────────────────────────────────────────────────────────
+# catalog helpers
 
 def entries(name: str) -> list[tuple]:
     """CATALOG rows as (repo, from, to, prefix_map)."""
@@ -219,8 +218,8 @@ def repo_size(repo: str) -> int | None:
 def pack_total(name: str) -> tuple[int, set[str], bool]:
     """(bytes, languages covered, translates both ways).
 
-    "Both ways" is about direction, not availability: Korean only has a Korean
-    into English model, so it is one way even though that model downloads fine.
+    "Both ways" is about direction. Korean only has a Korean into English model,
+    so it is one way even though that model downloads fine.
     """
     total, langs = 0, set()
     into_en, from_en = set(), set()
@@ -233,10 +232,9 @@ def pack_total(name: str) -> tuple[int, set[str], bool]:
             into_en |= set(src) - {"en"}
         if "en" in src:
             from_en |= set(dst) - {"en"}
-    # Both ways means you can get into English and back out again. The two
-    # sides need not cover identical language sets: the "everything" bundle
-    # takes almost anything into English and sends English back out to 26
-    # languages, which is two way even though the lists differ.
+    # Both ways means into English and back out again. The two sides don't have
+    # to cover the same languages: the "everything" bundle takes almost anything
+    # into English and sends English back out to 26 languages, and that counts.
     two_way = bool(into_en) and bool(from_en)
     return total, langs, two_way
 
@@ -247,7 +245,7 @@ def covers(langs: set[str], width: int = 34) -> str:
     return s if len(s) <= width else s[:width - 3] + "..."
 
 
-# ── card layout ───────────────────────────────────────────────────────────────
+# card layout
 
 def card_paths(card: str) -> tuple[Path, Path, Path]:
     root = Path(card) / "Translate"
@@ -279,7 +277,7 @@ def dir_size(path: Path) -> int:
     return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
 
 
-# ── downloading ───────────────────────────────────────────────────────────────
+# downloading
 
 def fetch(url: str, dest: Path, log: nc.Progress,
           label: str, done_before: int, grand_total: int) -> int:
@@ -301,7 +299,7 @@ def fetch(url: str, dest: Path, log: nc.Progress,
                                  f"{nc.human(grand_total)}")
     except urllib.error.HTTPError as e:
         tmp.unlink(missing_ok=True)
-        raise RuntimeError(f"could not fetch {url} ({e})") from e
+        raise RuntimeError(f"couldn't download {url} ({e})") from e
     os.replace(tmp, dest)
     return got
 
@@ -312,8 +310,8 @@ def ensure_runtime(root: Path, log: nc.Progress) -> None:
     missing = [f for f in RUNTIME_FILES if not (rt / f).exists()]
     if not missing:
         return
-    log.step("Browser runtime")
-    log(nc.c("2", "  the small library that runs the models in the browser"))
+    log.step("Translate page files")
+    log(nc.c("2", "  the small bit that runs translation in the phone's browser (only needed once)"))
     for f in missing:
         fetch(f"{RUNTIME_BASE}/{f}", rt / f, log, f, 0, 0)
         log(f"  {f}  {nc.human((rt / f).stat().st_size)}")
@@ -340,7 +338,7 @@ def fetch_model(repo: str, models: Path, log: nc.Progress,
     return dir_size(dest), moved
 
 
-# ── the interactive menu ──────────────────────────────────────────────────────
+# the interactive menu
 
 def show_menu(installed: set[str]) -> None:
     mark = lambda name: nc.c("1;33", " ✓ on card") if all(
@@ -360,7 +358,7 @@ def show_menu(installed: set[str]) -> None:
                                       74, initial_indent=" " * 8,
                                       subsequent_indent=" " * 8)))
 
-    print(nc.c("1", "\nSingle languages") + nc.c("2", "  (both directions unless noted)"))
+    print(nc.c("1", "\nSingle languages") + nc.c("2", "  (both ways unless it says otherwise)"))
     base = len(COLLECTION_ORDER)
     for j, name in enumerate(PACK_ORDER, base + 1):
         total, langs, ok = pack_total(name)
@@ -380,8 +378,8 @@ def menu_names() -> list[str]:
 def ask_selection() -> list[str] | None:
     names = menu_names()
     print(nc.c("1", "\nWhich would you like?"))
-    print(nc.c("2", "  numbers separated by commas, e.g. 1,7,9"))
-    print(nc.c("2", "  or a name, e.g. spanish   or 'all' for everything"))
+    print(nc.c("2", "  numbers with commas between them, like 1,7,9"))
+    print(nc.c("2", "  or a name like spanish, or 'all' for everything"))
     while True:
         raw = input("Choose (0 to cancel): ").strip().lower()
         if raw in ("0", "", "q", "cancel"):
@@ -402,37 +400,37 @@ def ask_selection() -> list[str] | None:
             print(f"  don't know '{bad}'. Use the numbers above, a name, or 'all'.")
             continue
         if not picked:
-            print("  nothing selected.")
+            print("  nothing picked.")
             continue
         return picked
 
 
-# ── the tool ──────────────────────────────────────────────────────────────────
+# the tool
 
 def run(dest: str | None = None, add: list[str] | None = None,
         remove: list[str] | None = None, list_only: bool = False,
         assume_yes: bool = False) -> int:
     """Interactive language pack installer. Keyword args skip the prompts."""
-    nc.banner("Offline translation packs")
+    nc.banner("Translation languages")
 
     if list_only:
         print(nc.c("2", "\nChecking sizes, this needs the internet and takes a moment."))
         show_menu(set())
-        print(nc.c("2", "\nSizes are card space. Each phone only copies the one pair"))
-        print(nc.c("2", "it uses, about 115 MB per direction, and keeps it after that."))
+        print(nc.c("2", "\nSizes are how much card space they take. Each phone only copies the"))
+        print(nc.c("2", "language it uses, about 115 MB each way, and keeps it after that."))
         return 0
 
     dest = nc.choose_card(dest, prompt="Which card are we adding languages to?")
     if not dest:
-        print("cancelled.")
+        print("Cancelled.")
         return 1
     root, models, manifest_path = card_paths(dest)
 
     # The page itself ships with the card frontend, not with this tool.
     if not (Path(dest) / "translate.html").exists():
         print(nc.c("1;31", "\n  note: translate.html isn't on this card yet."))
-        print(nc.c("1;31", "  Language packs will install fine, but the Translate page"))
-        print(nc.c("1;31", "  won't appear until the card's frontend is updated."))
+        print(nc.c("1;31", "  The languages will still go on fine, but the Translate page"))
+        print(nc.c("1;31", "  won't show up until the card's Nomad files are updated."))
 
     man = load_manifest(manifest_path)
     installed = {p["id"] for p in man["packs"]}
@@ -445,7 +443,7 @@ def run(dest: str | None = None, add: list[str] | None = None,
         try:
             wanted = expand(remove)
         except KeyError as e:
-            print(nc.c("1;31", f"unknown pack {e}."))
+            print(nc.c("1;31", f"There's no pack called {e}."))
             return 1
         for name in wanted:
             for repo, _, _, _ in entries(name):
@@ -463,18 +461,18 @@ def run(dest: str | None = None, add: list[str] | None = None,
         try:
             wanted = expand(add)
         except KeyError as e:
-            print(nc.c("1;31", f"unknown pack {e}. Try --list."))
+            print(nc.c("1;31", f"There's no pack called {e}. Use --list to see them."))
             return 1
     else:
         print(nc.c("2", "\nChecking sizes, this needs the internet and takes a moment."))
         show_menu(installed)
         picked = ask_selection()
         if not picked:
-            print("cancelled.")
+            print("Cancelled.")
             return 1
         wanted = expand(picked)
 
-    # ── plan: what's new, how big, does it fit ────────────────────────────────
+    # plan: what's new, how big, does it fit
     todo: list[tuple[str, list, list, dict | None]] = []
     skipped, unavailable = [], []
     for name in wanted:
@@ -491,7 +489,7 @@ def run(dest: str | None = None, add: list[str] | None = None,
     if skipped:
         print(nc.c("2", f"\n  already on the card, skipping: {len(skipped)} model(s)"))
     if unavailable:
-        print(nc.c("2", f"  no browser ready build, skipping: {', '.join(unavailable)}"))
+        print(nc.c("2", f"  can't get these right now, skipping: {', '.join(unavailable)}"))
     if not todo:
         print(nc.c("1", "\nNothing left to do, everything you picked is already there."))
         summarize(man)
@@ -502,7 +500,7 @@ def run(dest: str | None = None, add: list[str] | None = None,
     for _, src, dst, _ in todo:
         langs |= set(src) | set(dst)
 
-    print(nc.c("1", f"\nTo install: {len(todo)} model(s), {nc.human(grand_total)}"))
+    print(nc.c("1", f"\nTo download: {len(todo)} model(s), {nc.human(grand_total)}"))
     print(f"  languages: {covers(langs, 60)}")
     print(f"  going to: {nc.c('1', str(root))}")
     try:
@@ -511,18 +509,18 @@ def run(dest: str | None = None, add: list[str] | None = None,
         if free < grand_total * 1.05:
             print(nc.c("1;31", "  warning: the card may not have room for this."))
             if free < grand_total:
-                print(nc.c("1;31", "  it almost certainly does not. Free space or pick less."))
+                print(nc.c("1;31", "  It almost certainly doesn't. Free up some space or pick fewer."))
     except OSError:
         pass
 
     if not assume_yes:
         if input("\nDownload these now? [y/N] ").strip().lower() not in ("y", "yes"):
-            print("cancelled.")
+            print("Cancelled.")
             return 1
 
-    # ── do it ────────────────────────────────────────────────────────────────
+    # do it
     log = nc.Progress()
-    log.plan(["runtime", "models", "manifest"])
+    log.plan(["Translate page files", "languages", "finish up"])
     try:
         ensure_runtime(root, log)
         log.step(f"Downloading {len(todo)} model(s), {nc.human(grand_total)}")
@@ -539,27 +537,27 @@ def run(dest: str | None = None, add: list[str] | None = None,
                 "prefixMap": pmap or None,
                 "license": "CC-BY-4.0", "source": "Helsinki-NLP OPUS-MT",
             })
-            # Written after every model, not once at the end: the world
-            # collection is several gigabytes and losing the bookkeeping
-            # because the last one failed would mean fetching it all again.
+            # Written after every model. The world collection is several
+            # gigabytes, and if the last one failed the bookkeeping would be
+            # lost and everything fetched again.
             write_manifest(manifest_path, man)
             log.done()
             log(f"  {nc.c('1', pid):<34} {nc.human(size)}")
     except KeyboardInterrupt:
         log.done()
         write_manifest(manifest_path, man)
-        print(nc.c("1;31", "\n  stopped. What finished is saved, run again to carry on."))
+        print(nc.c("1;31", "\n  Stopped. What finished is kept, run this again to carry on."))
         return 130
     except Exception as exc:
         log.done()
         write_manifest(manifest_path, man)
-        print(nc.c("1;31", f"\n  failed: {exc}"))
-        print(nc.c("2", "  what finished is saved. Run again to pick up the rest."))
+        print(nc.c("1;31", f"\n  Failed: {exc}"))
+        print(nc.c("2", "  What finished is kept. Run this again to get the rest."))
         return 1
     log.done()
 
     summarize(man)
-    print(nc.c("2", "\nEject the card safely, then open Translate on the nomad."))
+    print(nc.c("2", "\nEject the card safely, then open Translate on Nomad."))
     nc.hidden_page_note(dest, "translate", "Translate")
     return 0
 
@@ -595,13 +593,13 @@ def rebuild(dest: str | None = None) -> int:
     Re-derives every entry from the current catalog without downloading
     anything, which repairs a card written by an older version of this tool.
     """
-    nc.banner("Repair translation manifest")
+    nc.banner("Repair the language list")
     dest = nc.choose_card(dest, prompt="Which card?")
     if not dest:
         return 1
     root, models, manifest_path = card_paths(dest)
     if not models.is_dir():
-        print(nc.c("1;31", f"no models folder on that card: {models}"))
+        print(nc.c("1;31", f"No language models on that card ({models})"))
         return 1
 
     known = {}
@@ -629,25 +627,25 @@ def rebuild(dest: str | None = None) -> int:
     man["version"] = 2
     man["packs"] = packs
     write_manifest(manifest_path, man)
-    print(f"Rebuilt {manifest_path} from {len(packs)} models on the card.")
+    print(f"Rebuilt the language list ({manifest_path}) from {len(packs)} models on the card.")
     if unknown:
-        print(nc.c("2", f"  not in the catalog, left alone: {', '.join(unknown)}"))
+        print(nc.c("2", f"  not ones this tool knows, left alone: {', '.join(unknown)}"))
     summarize(man)
     return 0
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Add offline translation language packs to a nomad card.")
+        description="Add language packs for the Translate page to a Nomad card.")
     ap.add_argument("--list", action="store_true",
-                    help="show packs and sizes, install nothing")
+                    help="show the packs and their sizes without downloading anything")
     ap.add_argument("--add", nargs="+", metavar="PACK",
-                    help="packs or collections to install, e.g. spanish world")
+                    help="packs or collections to add, like spanish world")
     ap.add_argument("--remove", nargs="+", metavar="PACK",
-                    help="packs or collections to delete from the card")
+                    help="packs or collections to take off the card")
     ap.add_argument("--rebuild", action="store_true",
-                    help="rewrite the manifest from models already on the card")
-    ap.add_argument("-o", "--output", help="card mountpoint (skips the picker)")
+                    help="fix the language list using the models already on the card")
+    ap.add_argument("-o", "--output", help="where the card is mounted (skips the card picker)")
     ap.add_argument("-y", "--yes", action="store_true",
                     help="don't ask before downloading")
     args = ap.parse_args()
@@ -662,5 +660,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except KeyboardInterrupt:
-        print("\nbye.")
+        print("\nStopped.")
         sys.exit(130)

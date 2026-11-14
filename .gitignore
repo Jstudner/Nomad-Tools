@@ -4,3 +4,10 @@ __pycache__/
 
 # Downloads the map tools keep next to themselves (OSM extracts, tile caches); can run to GBs
 map-data/
+.nomad-work/
+.venv/
+
+# packaging: downloaded ffmpeg and build output
+packaging/vendor/
+packaging/build/
+packaging/dist/

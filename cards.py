@@ -1,12 +1,12 @@
 """
-Cross-platform card discovery for nomad's card tools.
+Card discovery for Nomad Card Tools.
 
-Finds plugged-in removable cards and flags which look like a nomad card, on:
-  • Linux:   lsblk (removable/USB disks only; never the system disk), and
-             udisksctl to mount a card that isn't mounted yet;
-  • Windows: removable drive letters (plus any fixed drive that looks like a
-             nomad card), already mounted by the OS;
-  • macOS:   volumes under /Volumes.
+Finds plugged-in removable cards and flags which look like a Nomad card:
+  Linux:   lsblk (removable/USB disks only, never the system disk), and
+           udisksctl to mount a card that isn't mounted yet
+  Windows: removable drive letters (plus any fixed drive that looks like a
+           Nomad card), already mounted by the OS
+  macOS:   volumes under /Volumes
 
 list_cards() returns a list of dicts shaped for the picker:
     {label, model, mountpoint|None, partition|None, is_nomad, free, size}
@@ -23,7 +23,7 @@ from typing import Callable, List, Optional
 
 Log = Callable[[str], None]
 
-# Signature of a nomad card's frontend at the SD root.
+# Signature of a Nomad card's frontend at the SD root.
 _SIG_FILES = ("index.html", "menu.html")
 _SIG_DIRS = ("Movies", "Shows")
 
@@ -50,7 +50,7 @@ def _free_size(mountpoint: Optional[str]):
         return None, None
 
 
-# ── Linux ─────────────────────────────────────────────────────────────────────
+# Linux
 
 _LSBLK_COLS = "NAME,PATH,SIZE,TYPE,MOUNTPOINT,LABEL,FSTYPE,RM,RO,MODEL,TRAN,UUID"
 
@@ -129,10 +129,10 @@ def _mount_linux(partition: str, log: Log) -> str:
         if mp and mp[0]:
             return mp[0]
         time.sleep(0.5)
-    raise RuntimeError(f"Could not determine mountpoint for {partition}")
+    raise RuntimeError(f"Couldn't work out where {partition} got mounted")
 
 
-# ── Windows ───────────────────────────────────────────────────────────────────
+# Windows
 
 def _list_windows() -> List[dict]:
     import ctypes
@@ -150,8 +150,8 @@ def _list_windows() -> List[dict]:
         root = f"{letter}\\"
         dtype = k32.GetDriveTypeW(root)
         nomad = is_nomad_mount(root)
-        # Show removable cards always; a fixed drive only if it looks like nomad
-        # (built-in SD readers sometimes report FIXED). Never the system drive.
+        # Show removable cards always, and a fixed drive only if it looks like
+        # Nomad (built-in SD readers sometimes report FIXED). Never the system drive.
         if letter.upper() == system_drive:
             continue
         if dtype == DRIVE_REMOVABLE or (dtype == DRIVE_FIXED and nomad):
@@ -171,7 +171,7 @@ def _list_windows() -> List[dict]:
     return cards
 
 
-# ── macOS ─────────────────────────────────────────────────────────────────────
+# macOS
 
 def _list_macos() -> List[dict]:
     cards: List[dict] = []
@@ -195,10 +195,10 @@ def _list_macos() -> List[dict]:
     return cards
 
 
-# ── public API ────────────────────────────────────────────────────────────────
+# public API
 
 def list_cards() -> List[dict]:
-    """Removable cards currently visible, most-likely-nomad first."""
+    """Removable cards currently visible, likeliest Nomad card first."""
     try:
         if sys.platform.startswith("linux"):
             cards = _list_linux()
@@ -218,5 +218,5 @@ def mount_partition(partition: str, log: Log = print) -> str:
     """Mount an unmounted partition and return its mountpoint (Linux only)."""
     if sys.platform.startswith("linux"):
         return _mount_linux(partition, log)
-    raise RuntimeError("Automatic mounting is only supported on Linux; "
-                       "mount the card yourself and pick it, or enter its path.")
+    raise RuntimeError("I can only mount cards for you on Linux. Open the card "
+                       "yourself and pick it, or type where it is.")

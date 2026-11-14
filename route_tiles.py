@@ -46,7 +46,7 @@ F_REV = og.F_GEOM_REVERSED
 SPEED_BY_CODE = [og.CLASS_SPEED[c] for c in og.ROAD_CLASSES]
 
 
-# ---- partition ----
+# partition
 
 def partition(nodes, budget, min_span=0.0015):
     """Quadtree over vertex coordinates until each leaf holds <= budget vertices
@@ -91,7 +91,7 @@ def partition(nodes, budget, min_span=0.0015):
     return cell_of, cells
 
 
-# ---- serialize ----
+# serialize
 
 def _e6(v):
     return int(round(v * 1e6))
@@ -170,9 +170,9 @@ def write_tiles(g, rdir: Path, budget=9000, log=print):
     (rdir / "l0.idx").write_bytes(idx)
 
     biggest = max(index, key=lambda c: c[3])
-    log(f"  tiled: {len(cells):,} cells, {len(nodes):,} vertices, {len(edges):,} edges; "
-        f"l0.bin {len(blob)/1048576:.1f}MB, l0.idx {len(idx)/1024:.1f}KB; "
-        f"largest cell {biggest[3]/1024:.0f}KB ({biggest[4]:,} verts)")
+    log(f"  tiled: {len(cells):,} cells, {len(nodes):,} vertices, {len(edges):,} edges. "
+        f"l0.bin {len(blob)/1048576:.1f} MB, l0.idx {len(idx)/1024:.1f} KB. "
+        f"Largest cell {biggest[3]/1024:.0f} KB ({biggest[4]:,} vertices)")
     return {"cells": len(cells), "nodes": len(nodes), "edges": len(edges),
             "binBytes": len(blob), "idxBytes": len(idx),
             "maxCellBytes": biggest[3], "budget": budget}
@@ -190,7 +190,7 @@ def build_tiled_region(bbox, out_dir: Path, budget=9000, log=print):
     return stats
 
 
-# ---- reference reader + lazy A* (validation mirror of the JS) ----
+# reference reader + lazy A* (validation mirror of the JS)
 
 class TiledReader:
     """Reads l0.idx/l0.bin the way the app will: index up front, cells by
@@ -340,18 +340,18 @@ class TiledReader:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Build or validate a tiled routing graph.")
-    ap.add_argument("--bbox", help="west,south,east,north (build mode)")
-    ap.add_argument("-o", "--output", help="region dir to write routing/ into")
-    ap.add_argument("--budget", type=int, default=9000, help="max vertices per cell")
-    ap.add_argument("--validate", help="a routing/ dir to self-check")
+    ap = argparse.ArgumentParser(description="Build or check a tiled routing graph.")
+    ap.add_argument("--bbox", help="west,south,east,north (to build)")
+    ap.add_argument("-o", "--output", help="region folder to write routing/ into")
+    ap.add_argument("--budget", type=int, default=9000, help="most vertices per cell (default 9000)")
+    ap.add_argument("--validate", help="a routing/ folder to check")
     args = ap.parse_args()
     if args.validate:
         r = TiledReader(Path(args.validate))
         print(f"index: {len(r.cell_list)} cells, {r.node_total:,} nodes, bbox {r.bbox}")
         return 0
     if not (args.bbox and args.output):
-        ap.error("build mode needs --bbox and -o")
+        ap.error("to build, give --bbox and -o")
     bbox = tuple(float(p) for p in args.bbox.split(","))
     import json
     print(json.dumps(build_tiled_region(bbox, Path(args.output), args.budget), indent=2))

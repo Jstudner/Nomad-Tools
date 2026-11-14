@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-map_tiles: download offline map tiles for a region onto a nomad card.
+map_tiles: download offline map tiles for a region onto a Nomad card.
 
 Pick an area (bounding box) and zoom levels, and the tile pyramid is pulled
-into <card>/Maps/<id>/ in the layout nomad's Maps page reads, manifest
+into <card>/Maps/<id>/ in the layout Nomad's Maps page reads, manifest
 included. Before anything downloads it fetches a few sample tiles to estimate
 the total size, shows the tile count per zoom level, and checks the card has
-room, so you know what you're in for up front.
+room.
 
 Defaults to the USGS National Map topo service: public domain US government
 data, no API key, no bulk download restrictions. Any XYZ tile server can be
@@ -140,7 +140,7 @@ def download_tile(url_tpl: str, tiles_dir: Path, fmt: str,
         try:
             data = fetch(url)
             if len(data) < 100:
-                raise OSError("suspiciously small tile")
+                raise OSError("the tile came back nearly empty")
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(data)
             with ctr.lock:
@@ -160,48 +160,48 @@ def download_tile(url_tpl: str, tiles_dir: Path, fmt: str,
 # interactive prompts
 
 def ask_bbox() -> tuple[float, float, float, float] | None:
-    print("\nDescribe the area as a bounding box: west,south,east,north")
-    print(nc.c("2", "  (easy way: openstreetmap.org, Export tab, 'Manually select a"))
+    print("\nType the edges of the area as four numbers: west,south,east,north")
+    print(nc.c("2", "  (easiest way: on openstreetmap.org, open the Export tab, click 'Manually select a"))
     print(nc.c("2", "   different area', then copy the four numbers: left,bottom,right,top)"))
-    print(nc.c("2", "  example, Pennsylvania: -80.52,39.72,-74.69,42.27"))
+    print(nc.c("2", "  for example, Pennsylvania is -80.52,39.72,-74.69,42.27"))
     while True:
-        raw = input("bbox: ").strip()
+        raw = input("area: ").strip()
         if not raw:
             return None
         parts = raw.replace(" ", "").split(",")
         try:
             west, south, east, north = (float(p) for p in parts)
         except ValueError:
-            print("  need exactly four numbers separated by commas.")
+            print("  That needs exactly four numbers with commas between them.")
             continue
         if not (-180 <= west < east <= 180 and -85 <= south < north <= 85):
-            print("  that box is inside out or off the map. Check the order: west,south,east,north.")
+            print("  Those numbers are in the wrong order or off the map. The order is west,south,east,north.")
             continue
         return (west, south, east, north)
 
 
 def ask_zooms() -> tuple[int, int]:
-    print("\nZoom levels (min-max). Each level has roughly 4x the tiles of the one before.")
-    print(nc.c("2", "  6-12 is a good regional map (state roads down to town streets)."))
-    print(nc.c("2", "  13-14 add street detail but grow fast; trim the box if you go there."))
+    print("\nZoom levels, like 6-12. Each level has about 4 times as many tiles as the one before.")
+    print(nc.c("2", "  6-12 is good for a region (state roads down to town streets)."))
+    print(nc.c("2", "  13-14 add more street detail but get big fast. Use a smaller area if you go that high."))
     while True:
         raw = input("zooms [6-12]: ").strip() or "6-12"
         try:
             lo, hi = (int(p) for p in raw.split("-")) if "-" in raw else (int(raw), int(raw))
         except ValueError:
-            print("  format: min-max, e.g. 6-12")
+            print("  Type it like 6-12")
             continue
         if not (0 <= lo <= hi <= 16):
-            print("  levels must be 0-16 with min at or below max.")
+            print("  Levels go from 0 to 16, and the first number can't be bigger than the second.")
             continue
         return lo, hi
 
 
 def ask_source() -> tuple[str, str, str]:
-    print("\nTile source:")
+    print("\nWhere should the tiles come from?")
     for i, (name, _, _, _, note) in enumerate(SOURCES, 1):
         print(f"  {i}. {nc.c('1', name)}  {nc.c('2', '(' + note + ')')}")
-    print(f"  {len(SOURCES) + 1}. Custom XYZ URL template")
+    print(f"  {len(SOURCES) + 1}. Another tile server (you give the URL)")
     while True:
         raw = input("Choose [1]: ").strip() or "1"
         if raw.isdigit() and 1 <= int(raw) <= len(SOURCES):
@@ -210,13 +210,13 @@ def ask_source() -> tuple[str, str, str]:
         if raw == str(len(SOURCES) + 1):
             url = input("  URL template (with {z}/{x}/{y}): ").strip()
             if "{z}" not in url or "{x}" not in url or "{y}" not in url:
-                print("  template must contain {z}, {x} and {y}.")
+                print("  The URL needs {z}, {x} and {y} in it.")
                 continue
-            print(nc.c("2", "  check the provider allows bulk download. openstreetmap.org does not."))
-            attr = input("  attribution text: ").strip() or url.split("/")[2]
+            print(nc.c("2", "  Check that the server allows bulk downloads first. openstreetmap.org doesn't."))
+            attr = input("  credit line (shown on the map): ").strip() or url.split("/")[2]
             fmt = input("  tile format [jpg]: ").strip().lstrip(".") or "jpg"
             return url, attr, fmt
-        print("  pick one of the numbers above.")
+        print("  Pick one of the numbers above.")
 
 
 def slugify(name: str) -> str:
@@ -240,18 +240,18 @@ def run(dest: str | None = None, name: str | None = None, region_id: str | None 
     the region's outline rather than its bounding box, so open ocean inside
     the box is skipped.
     """
-    nc.banner("Download offline maps")
+    nc.banner("Download map tiles")
 
     # what and where on the map
-    name = name or input("\nRegion name (shown in the Maps page): ").strip()
+    name = name or input("\nArea name (shown on the Maps page): ").strip()
     if not name:
-        print("cancelled.")
+        print("Cancelled.")
         return 1
     region_id = region_id or slugify(name)
 
     bbox = bbox or ask_bbox()
     if not bbox:
-        print("cancelled.")
+        print("Cancelled.")
         return 1
     z_min, z_max = zooms or ask_zooms()
 
@@ -273,47 +273,47 @@ def run(dest: str | None = None, name: str | None = None, region_id: str | None 
         total_tiles = count_tiles(ranges)
 
     print(nc.c("1", f"\n{name}") + f"  ({region_id})")
-    print(f"  bbox [{', '.join(f'{v:.4f}' for v in bbox)}], zoom {z_min}-{z_max}")
+    print(f"  area [{', '.join(f'{v:.4f}' for v in bbox)}], zoom {z_min}-{z_max}")
     if coverage is not None:
-        print(nc.c("2", "  following the region outline, so ocean and neighbours are skipped"))
+        print(nc.c("2", "  following the area's outline, so ocean and neighbours are skipped"))
     print("  tiles per level: " + ", ".join(f"z{z}:{n:,}" for z, n in sorted(per_level.items())))
     print(f"  total: {nc.c('1', f'{total_tiles:,} tiles')}")
     if total_tiles > WARN_TILES:
-        print(nc.c("1;31", f"  warning: that is a lot of tiles (over {WARN_TILES:,}). This will"))
-        print(nc.c("1;31", "  take hours. Consider a lower max zoom or a smaller box."))
+        print(nc.c("1;31", f"  warning: that's a lot of tiles (over {WARN_TILES:,}). This will"))
+        print(nc.c("1;31", "  take hours. Try a lower top zoom or a smaller area."))
 
-    print("\nFetching a few sample tiles to estimate the download size...")
+    print("\nDownloading a few sample tiles to guess the total size...")
     avg = sample_tile_size(url_tpl, ranges)
     if avg is None:
-        print(nc.c("1;31", "error: could not fetch any sample tile. The server may be"))
-        print(nc.c("1;31", "       unreachable, or this source has no coverage for that area."))
+        print(nc.c("1;31", "error: couldn't download any sample tiles. The server might be"))
+        print(nc.c("1;31", "       down, or it doesn't have maps for that area."))
         return 1
     est = avg * total_tiles
-    print(f"  average tile {nc.human(avg)}, estimated download {nc.c('1', '~' + nc.human(est))}")
+    print(f"  average tile {nc.human(avg)}, about {nc.c('1', nc.human(est))} to download")
 
     # destination and space check
-    dest = nc.choose_card(dest, prompt="Which card should this region go on?")
+    dest = nc.choose_card(dest, prompt="Which card should this area go on?")
     if not dest:
-        print("cancelled.")
+        print("Cancelled.")
         return 1
     region_dir = Path(dest) / "Maps" / region_id
     print(f"\nDestination: {nc.c('1', str(region_dir))}")
     existing = sum(1 for _ in region_dir.glob("tiles/*/*/*")) if region_dir.is_dir() else 0
     if existing:
-        print(nc.c("2", f"  {existing:,} tiles already there. They'll be kept, the rest filled in."))
+        print(nc.c("2", f"  {existing:,} tiles already there. They'll be kept and the rest filled in."))
     try:
         free = shutil.disk_usage(dest).free
-        print(f"  free space: {nc.human(free)}   (estimated need ~{nc.human(est)})")
+        print(f"  free space: {nc.human(free)}   (needs about {nc.human(est)})")
         if free < est * 1.1:
             print(nc.c("1;31", "  warning: the card may not have room for this download."))
             if free < est:
-                print(nc.c("1;31", "  it almost certainly does not. Free space or shrink the region."))
+                print(nc.c("1;31", "  It almost certainly doesn't. Free up some space or pick a smaller area."))
     except OSError:
         pass
 
     # confirm
     if not assume_yes and input("\nStart the download? [y/N] ").strip().lower() not in ("y", "yes"):
-        print("aborted.")
+        print("Cancelled.")
         return 1
 
     # download
@@ -321,8 +321,8 @@ def run(dest: str | None = None, name: str | None = None, region_id: str | None 
     tiles_dir.mkdir(parents=True, exist_ok=True)
     ctr = _Counters()
     progress = nc.Progress()
-    progress(f"downloading {total_tiles:,} tiles with {CONCURRENCY} workers "
-             "(safe to interrupt, re-run to resume)")
+    progress(f"Downloading {total_tiles:,} tiles "
+             "(you can stop any time, run it again to carry on)")
     t0 = time.time()
 
     def jobs():
@@ -351,8 +351,8 @@ def run(dest: str | None = None, name: str | None = None, region_id: str | None 
             concurrent.futures.wait(pending)
     except KeyboardInterrupt:
         progress.done()
-        print(nc.c("1;31", "\ninterrupted. Progress is saved; re-run with the same "
-                           "region to resume."))
+        print(nc.c("1;31", "\nStopped. What's downloaded is kept, run it again with the same "
+                           "area to carry on."))
         return 130
     progress.pct(100.0, f"{total_tiles:,}/{total_tiles:,}")
     progress.done()
@@ -378,31 +378,31 @@ def run(dest: str | None = None, name: str | None = None, region_id: str | None 
     # summary
     mins = (time.time() - t0) / 60.0
     print(nc.c("1", f"\nDone in {mins:.1f} min: ") +
-          f"{ctr.done:,} downloaded, {ctr.skipped:,} already present, "
-          f"{ctr.failed:,} failed. The region is {nc.human(size_bytes)} on the card.")
+          f"{ctr.done:,} downloaded, {ctr.skipped:,} already there, "
+          f"{ctr.failed:,} failed. The area takes {nc.human(size_bytes)} on the card.")
     if ctr.failed:
-        print(nc.c("31", "  some tiles failed (shown below). Re-run to retry just those:"))
+        print(nc.c("31", "  Some tiles failed (listed below). Run it again to retry just those:"))
         for f in ctr.failures:
             print(nc.c("31", f"    {f}"))
     elif final_message:
         # suppressed when nomad_route drives this: a routing region is NOT listed
         # on the Maps page, and saying so here would contradict its own sign-off
-        print(nc.c("2", f"  Eject safely; '{name}' will appear on nomad's Maps page."))
+        print(nc.c("2", f"  Eject the card safely, and '{name}' will show up on Nomad's Maps page."))
         nc.hidden_page_note(dest, "maps", "Maps")
     return 2 if ctr.failed else 0
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Download an offline map region onto a nomad card.")
-    ap.add_argument("--name", help="region name shown in the Maps page")
-    ap.add_argument("--id", dest="region_id", help="folder name under /Maps (default: from name)")
+        description="Download map tiles for an area onto a Nomad card.")
+    ap.add_argument("--name", help="area name shown on the Maps page")
+    ap.add_argument("--id", dest="region_id", help="folder name under /Maps (default: made from the name)")
     ap.add_argument("--bbox", help="west,south,east,north")
-    ap.add_argument("--zooms", help="min-max zoom levels, e.g. 6-12")
-    ap.add_argument("--url", help="custom XYZ URL template with {z}/{x}/{y}")
-    ap.add_argument("--attribution", help="attribution text for the map page")
+    ap.add_argument("--zooms", help="zoom levels, like 6-12")
+    ap.add_argument("--url", help="another tile server's URL, with {z}/{x}/{y} in it")
+    ap.add_argument("--attribution", help="credit line shown on the map")
     ap.add_argument("--format", dest="fmt", help="tile file extension (default jpg)")
-    ap.add_argument("-o", "--output", help="destination card mountpoint (skips the picker)")
+    ap.add_argument("-o", "--output", help="where the card is mounted (skips the card picker)")
     ap.add_argument("-y", "--yes", action="store_true", help="don't ask before downloading")
     # bboxes west of Greenwich start with "-", which argparse mistakes for a
     # flag, so fold "--bbox -80,..." into "--bbox=-80,..." before parsing
@@ -427,7 +427,7 @@ def main() -> int:
                 else (int(args.zooms), int(args.zooms))
             zooms = (lo, hi)
         except ValueError:
-            ap.error("--zooms format: min-max, e.g. 6-12")
+            ap.error("--zooms should look like 6-12")
 
     return run(dest=args.output, name=args.name, region_id=args.region_id,
                bbox=bbox, zooms=zooms, url_tpl=args.url,
@@ -438,5 +438,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except KeyboardInterrupt:
-        print("\naborted.")
+        print("\nStopped.")
         sys.exit(130)

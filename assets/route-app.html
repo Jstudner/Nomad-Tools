@@ -1,10 +1,10 @@
 <!DOCTYPE html>
 <!-- Nomad offline routing app. Self-contained under /Maps/<id>/: reads
      ./manifest.json, ./routing/graph.bin (NRG1) and ./routing/places.json,
-     and serves tiles from ./tiles. Built by pc-tools/nomad_route.py.
-     Layout is map-first: a compact planner card and a collapsible directions
-     card float over the map on phones; on wide screens they become a left
-     sidebar so the map is never covered. -->
+     and serves tiles from ./tiles. Built by nomad_route.py.
+     On phones a compact planner card and a collapsible directions card float
+     over the map. On wide screens they become a left sidebar so the map is
+     never covered. -->
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
@@ -34,7 +34,7 @@
   /* sidebar wrapper: does nothing on phones (children float), becomes a column on desktop */
   #sidebar{display:contents}
 
-  /* ---- planner card ---- */
+  /* planner card */
   #planner{position:absolute;z-index:1000;top:10px;left:10px;right:10px;max-width:440px;margin:0 auto;
     background:var(--card);border:1px solid var(--line);border-radius:14px;
     box-shadow:0 4px 20px rgba(0,0,0,.20);padding:10px 12px}
@@ -107,7 +107,7 @@
   .tapbtns button{flex:1;border:none;border-radius:7px;padding:7px 10px;color:#fff;
     font-size:.8rem;font-weight:600;cursor:pointer}
 
-  /* ---- directions card ---- */
+  /* directions card */
   #directions{position:absolute;z-index:1000;left:10px;right:10px;bottom:10px;max-width:440px;margin:0 auto;
     background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:0 4px 20px rgba(0,0,0,.20);
     display:none;overflow:hidden}
@@ -126,13 +126,13 @@
   #steps .txt{flex:1;color:var(--text)}
   #steps .d{color:var(--muted);font-size:.8rem;white-space:nowrap}
 
-  /* ---- toast ---- */
+  /* toast */
   #toast{position:absolute;z-index:1500;left:50%;bottom:20px;transform:translate(-50%,10px);
     background:rgba(20,22,26,.92);color:#fff;border-radius:20px;padding:8px 16px;font-size:.85rem;
     box-shadow:0 3px 14px rgba(0,0,0,.3);opacity:0;pointer-events:none;transition:opacity .18s,transform .18s;max-width:82vw}
   #toast.show{opacity:1;transform:translate(-50%,0)}
 
-  /* ---- GPS help modal (flags method, from the Maps page) ---- */
+  /* GPS help modal (flags method, from the Maps page) */
   .gps-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:5000;
     align-items:center;justify-content:center;padding:16px}
   .gps-modal.open{display:flex}
@@ -147,7 +147,7 @@
   .gps-modal-content button{margin-top:12px;width:100%;background:var(--primary);
     color:var(--color-white,#fff);border:none;border-radius:8px;padding:10px;cursor:pointer}
 
-  /* ---- routing overlay: blocks the map while a route is being found ---- */
+  /* routing overlay: blocks the map while a route is being found */
   #routeOverlay{position:absolute;inset:0;z-index:2000;background:rgba(0,0,0,.45);
     display:none;align-items:center;justify-content:center;padding:20px}
   #routeOverlay.show{display:flex}
@@ -163,14 +163,14 @@
     border:1px solid var(--line);border-radius:9px;padding:9px;cursor:pointer;font-size:.92rem}
   #routeCancel:hover{border-color:var(--primary)}
 
-  /* ---- loader ---- */
+  /* loader */
   #loader{position:absolute;inset:0;z-index:1400;background:var(--card);display:flex;
     flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;padding:24px}
   #loader .bar{width:min(320px,80vw);height:8px;border-radius:5px;background:var(--bg);overflow:hidden}
   #loader .bar>i{display:block;height:100%;width:0;background:var(--primary);transition:width .2s}
   #fatal{color:#e0473c;max-width:90vw}
 
-  /* ---- desktop: sidebar, map fills the rest, nothing floats over it ---- */
+  /* desktop: sidebar, map fills the rest, nothing floats over it */
   @media (min-width:820px){
     #map{left:360px}
     #sidebar{display:flex;flex-direction:column;position:absolute;top:0;left:0;bottom:0;width:360px;z-index:1000;
@@ -295,7 +295,7 @@ function escapeHtml(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'
 let toastTimer=null;
 function toast(msg,ms){ const t=$('toast'); if(!msg){t.classList.remove('show');return;} t.textContent=msg; t.classList.add('show'); clearTimeout(toastTimer); if(ms) toastTimer=setTimeout(()=>t.classList.remove('show'),ms); }
 
-/* ================= NRG1 routing graph (validated core, unchanged) ================= */
+/* NRG1 routing graph (validated core, unchanged) */
 const CLASS_SPEED=[100,90,60,50,45,40,30,12,20,40,5,5,4,15,5,20];
 const F_FOOT=1<<4, F_AGAINST=1<<5, F_REV=1<<6;
 const NO_NAME=0xFFFFFFFF;
@@ -456,7 +456,7 @@ function legsToSteps(legs){
   return {steps,poly};
 }
 
-/* ============ routers: flat = whole graph in RAM; tiled = cells on demand ============ */
+/* routers: flat = whole graph in RAM; tiled = cells on demand */
 let ROUTER=null;
 function flatRouter(){
   return {
@@ -613,7 +613,7 @@ async function routeTiled(a,b,drive){
 }
 function tiledRouter(){ return {tiled:true, snap:nearestTiled, route:routeTiled}; }
 
-/* ================= map + interaction ================= */
+/* map + interaction */
 let map=null, tileLayer=null;
 let pts={start:null,end:null};
 let routeLine=null, profile='drive', activeField=null, suppressRoute=false;
@@ -729,7 +729,7 @@ function toggleDir(){
   setTimeout(fitRoute,230);
 }
 
-/* ---- search + category browse. Nothing commits by looking: tapping a row
+/* search + category browse. Nothing commits by looking: tapping a row
    shows the place, the buttons are what set a point. When you're editing a
    field the target is obvious, so it's a single "Select"; when browsing a
    category it offers Start and End. ---- */
@@ -787,7 +787,7 @@ function runSearch(which){
 }
 function closeResults(){ $('results').style.display='none'; }
 
-/* ---- category pins for the visible area ---- */
+/* category pins for the visible area */
 let activeCat=-1, pinLayer=null, catTimer=null;
 function renderCatChips(){
   const wrap=$('cats');
@@ -892,7 +892,7 @@ function onMapClick(ev){
 }
 async function assignTap(which){ const ll=tapLL; map.closePopup(); if(ll) await setPoint(which,ll); }
 
-/* ---- two separate location actions ---- */
+/* two separate location actions */
 function gpsReady(){
   if(!window.isSecureContext || !navigator.geolocation){ $('gpsModal').classList.add('open'); return false; }
   return true;
@@ -928,7 +928,7 @@ async function useMyLocationAsStart(){
   }catch(e){ toast('Location unavailable',2600); }
 }
 
-/* ---- saved routes (same localStorage habit as the music page) ---- */
+/* saved routes (localStorage, like the music page) */
 /* keyed per region so each map keeps its own saved routes */
 const SAVE_KEY='nomad_maps_routes_'+((location.pathname||'').split('/').filter(Boolean)[1]||'region');
 let savedRoutes=[], lastSummary='';
@@ -986,7 +986,7 @@ async function setProfile(p){
   if(pts.start&&pts.end) route();
 }
 
-/* ================= boot ================= */
+/* boot */
 function addLocateControl(){
   const Ctl=L.Control.extend({options:{position:'topright'},onAdd(){
     const b=L.DomUtil.create('button','locate-btn');
